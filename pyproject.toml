@@ -1,0 +1,73 @@
+[build-system]
+requires = ["setuptools>=61.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "lightewm"
+version = "0.0.1"
+description = "Open-source embodied world model + action training and inference framework."
+readme = "README.md"
+authors = [{name = "HMI Lab"}]
+license = {text = "Apache-2.0"}
+requires-python = ">=3.10.1"
+keywords = [
+    "embodied-ai",
+    "world-model",
+    "video-generation",
+    "wan2.1",
+    "robot-learning",
+    "calvin",
+    "libero",
+]
+dependencies = [
+    "torch>=2.0.0",
+    "torchvision",
+    "transformers",
+    "imageio",
+    "imageio[ffmpeg]",
+    "safetensors",
+    "einops",
+    "sentencepiece",
+    "protobuf",
+    "modelscope",
+    "ftfy",
+    "pandas",
+    "accelerate",
+    "peft",
+    "datasets",
+]
+classifiers = [
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.10",
+    "License :: OSI Approved :: Apache Software License",
+    "Operating System :: OS Independent",
+    "Topic :: Scientific/Engineering :: Artificial Intelligence",
+]
+
+[project.urls]
+Homepage = "https://github.com/XuWuLingYu/LightEWM"
+Repository = "https://github.com/XuWuLingYu/LightEWM"
+Issues = "https://github.com/XuWuLingYu/LightEWM/issues"
+
+[tool.setuptools.packages.find]
+where = ["./"]
+include = ["lightewm", "lightewm.*"]
+
+[project.optional-dependencies]
+npu_aarch64 = [
+    "torch==2.7.1",
+    "torch-npu==2.7.1",
+    "torchvision==0.22.1"
+]
+npu = [
+    "torch==2.7.1+cpu",
+    "torch-npu==2.7.1",
+    "torchvision==0.22.1+cpu"
+]
+audio = [
+    "torchaudio",
+    "torchcodec"
+]
+
+[tool.setuptools]
+include-package-data = true
