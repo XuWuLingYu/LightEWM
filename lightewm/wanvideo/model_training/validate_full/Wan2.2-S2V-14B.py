@@ -1,9 +1,9 @@
 import torch
 from PIL import Image
 import librosa
-from diffsynth.utils.data import VideoData, save_video_with_audio
-from diffsynth.core import load_state_dict
-from diffsynth.pipelines.wan_video import WanVideoPipeline, ModelConfig
+from lightewm.diffsynth.utils.data import VideoData, save_video_with_audio
+from lightewm.diffsynth.core import load_state_dict
+from lightewm.diffsynth.pipelines.wan_video import WanVideoPipeline, ModelConfig
 
 
 pipe = WanVideoPipeline.from_pretrained(

@@ -1,6 +1,6 @@
 import torch
-from diffsynth.utils.data import save_video
-from diffsynth.pipelines.wan_video import WanVideoPipeline, ModelConfig
+from lightewm.diffsynth.utils.data import save_video
+from lightewm.diffsynth.pipelines.wan_video import WanVideoPipeline, ModelConfig
 
 
 pipe = WanVideoPipeline.from_pretrained(

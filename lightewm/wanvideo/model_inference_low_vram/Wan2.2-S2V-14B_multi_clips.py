@@ -1,8 +1,8 @@
 import torch
 from PIL import Image
 import librosa
-from diffsynth.utils.data import VideoData, save_video_with_audio
-from diffsynth.pipelines.wan_video import WanVideoPipeline, ModelConfig, WanVideoUnit_S2V
+from lightewm.diffsynth.utils.data import VideoData, save_video_with_audio
+from lightewm.diffsynth.pipelines.wan_video import WanVideoPipeline, ModelConfig, WanVideoUnit_S2V
 from modelscope import dataset_snapshot_download
 
 

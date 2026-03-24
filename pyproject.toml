@@ -20,7 +20,7 @@ keywords = [
     "libero",
 ]
 dependencies = [
-    "torch>=2.0.0",
+    "torch>=2.0.0,<=2.7.0",
     "torchvision",
     "transformers",
     "imageio",
@@ -35,6 +35,7 @@ dependencies = [
     "accelerate",
     "peft",
     "datasets",
+    "httpx[socks]"
 ]
 classifiers = [
     "Programming Language :: Python :: 3",

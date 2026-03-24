@@ -1,8 +1,10 @@
-import torch, os, argparse, accelerate, warnings
-from diffsynth.core import UnifiedDataset
-from diffsynth.core.data.operators import LoadVideo, LoadAudio, ImageCropAndResize, ToAbsolutePath
-from diffsynth.pipelines.wan_video import WanVideoPipeline, ModelConfig
-from diffsynth.diffusion import *
+import torch, os, argparse, accelerate, warnings, json, math, hashlib, time
+import pandas
+import imageio
+from lightewm.diffsynth.core import UnifiedDataset
+from lightewm.diffsynth.core.data.operators import LoadVideo, LoadAudio, ImageCropAndResize, ToAbsolutePath
+from lightewm.diffsynth.pipelines.wan_video import WanVideoPipeline, ModelConfig
+from lightewm.diffsynth.diffusion import *
 os.environ["TOKENIZERS_PARALLELISM"] = "false"
 
 
@@ -115,6 +117,38 @@ def wan_parser():
     parser = argparse.ArgumentParser(description="Simple example of a training script.")
     parser = add_general_config(parser)
     parser = add_video_size_config(parser)
+    parser.add_argument(
+        "--fps",
+        type=float,
+        default=None,
+        help="Target FPS for loading videos in data-process stage. Leave empty to keep source FPS.",
+    )
+    parser.add_argument(
+        "--resize_mode",
+        type=str,
+        default="stretch",
+        choices=["stretch", "letterbox"],
+        help="Frame resize mode in data-process stage. `stretch`: direct resize. `letterbox`: keep aspect ratio with black padding.",
+    )
+    parser.add_argument(
+        "--context_window_short_video_mode",
+        type=str,
+        default="drop",
+        choices=["drop", "repeat_last_frame"],
+        help="Data-process stage only. When video length < num_frames: `drop` or `repeat_last_frame`.",
+    )
+    parser.add_argument(
+        "--context_window_stride",
+        type=int,
+        default=81,
+        help="Data-process stage only. Sliding window stride in frames. Default: 81.",
+    )
+    parser.add_argument(
+        "--context_window_tail_align",
+        default=False,
+        action="store_true",
+        help="Data-process stage only. Append one extra tail-aligned window if the tail is not covered by regular windows.",
+    )
     parser.add_argument("--tokenizer_path", type=str, default=None, help="Path to tokenizer.")
     parser.add_argument("--audio_processor_path", type=str, default=None, help="Path to the audio processor. If provided, the processor will be used for Wan2.2-S2V model.")
     parser.add_argument("--max_timestep_boundary", type=float, default=1.0, help="Max timestep boundary (for mixed models, e.g., Wan-AI/Wan2.2-I2V-A14B).")
@@ -124,9 +158,154 @@ def wan_parser():
     return parser
 
 
+def load_metadata_as_records(metadata_path):
+    if metadata_path.endswith(".json"):
+        with open(metadata_path, "r") as f:
+            return json.load(f)
+    if metadata_path.endswith(".jsonl"):
+        records = []
+        with open(metadata_path, "r") as f:
+            for line in f:
+                records.append(json.loads(line.strip()))
+        return records
+    metadata = pandas.read_csv(metadata_path)
+    return [metadata.iloc[i].to_dict() for i in range(len(metadata))]
+
+
+def count_available_video_frames(video_path, target_fps=None):
+    reader = imageio.get_reader(video_path)
+    try:
+        try:
+            total_original_frames = int(reader.count_frames())
+        except Exception:
+            try:
+                length = reader.get_length()
+                if length is None or length == float("inf") or length < 0:
+                    raise ValueError("invalid length")
+                total_original_frames = int(length)
+            except Exception:
+                total_original_frames = sum(1 for _ in imageio.v3.imiter(video_path))
+        if target_fps is None:
+            return max(total_original_frames, 0)
+        meta_data = reader.get_meta_data()
+        if "duration" in meta_data and meta_data["duration"] is not None:
+            duration = float(meta_data["duration"])
+        else:
+            raw_fps = meta_data.get("fps", 0)
+            duration = total_original_frames / raw_fps if raw_fps else 0
+        total_available_frames = int(math.floor(duration * target_fps))
+        return max(total_available_frames, 0)
+    finally:
+        reader.close()
+
+
+def build_context_window_metadata(args):
+    if args.dataset_metadata_path is None:
+        return None
+    if args.context_window_stride <= 0:
+        raise ValueError("--context_window_stride must be a positive integer.")
+
+    context_dir = os.path.join(args.output_path, ".context_window")
+    os.makedirs(context_dir, exist_ok=True)
+    hash_key = json.dumps({
+        "metadata": args.dataset_metadata_path,
+        "base": args.dataset_base_path,
+        "num_frames": args.num_frames,
+        "stride": args.context_window_stride,
+        "tail_align": args.context_window_tail_align,
+        "short_mode": args.context_window_short_video_mode,
+        "fps": args.fps,
+    }, sort_keys=True)
+    file_name = f"context_metadata_{hashlib.md5(hash_key.encode('utf-8')).hexdigest()[:12]}.json"
+    metadata_out = os.path.join(context_dir, file_name)
+
+    if os.path.exists(metadata_out):
+        print(f"[ContextWindow] Reusing expanded metadata: {metadata_out}")
+        return metadata_out
+
+    local_rank = os.environ.get("LOCAL_RANK", "0")
+    if local_rank not in ("0", "-1"):
+        for _ in range(600):
+            if os.path.exists(metadata_out):
+                print(f"[ContextWindow] Reusing expanded metadata: {metadata_out}")
+                return metadata_out
+            time.sleep(1)
+        raise RuntimeError(
+            f"[ContextWindow] Timed out waiting for rank-0 metadata generation: {metadata_out}"
+        )
+
+    records = load_metadata_as_records(args.dataset_metadata_path)
+    window_size = int(args.num_frames)
+    stride = int(args.context_window_stride)
+    expanded_records = []
+    dropped_short = 0
+    dropped_invalid = 0
+
+    for record in records:
+        video_path = record.get("video", None)
+        if not isinstance(video_path, str):
+            expanded_records.append(record)
+            continue
+        absolute_video_path = os.path.join(args.dataset_base_path, video_path)
+        try:
+            total_frames = count_available_video_frames(absolute_video_path, target_fps=args.fps)
+        except Exception as e:
+            dropped_invalid += 1
+            print(f"[ContextWindow] Failed to read video '{absolute_video_path}', drop this item. Error: {e}")
+            continue
+
+        if total_frames < window_size:
+            if args.context_window_short_video_mode == "drop":
+                dropped_short += 1
+                continue
+            starts = [0]
+            pad_last = True
+        else:
+            starts = list(range(0, total_frames - window_size + 1, stride))
+            if args.context_window_tail_align:
+                tail_start = total_frames - window_size
+                if len(starts) == 0 or starts[-1] != tail_start:
+                    starts.append(tail_start)
+            pad_last = False
+
+        for context_start in starts:
+            expanded = record.copy()
+            expanded["video"] = {
+                "path": video_path,
+                "context_start": int(context_start),
+                "context_window_size": window_size,
+                "pad_last": bool(pad_last),
+            }
+            expanded_records.append(expanded)
+
+    temp_out = metadata_out + f".tmp.{os.getpid()}"
+    with open(temp_out, "w") as f:
+        json.dump(expanded_records, f)
+    os.replace(temp_out, metadata_out)
+    print(
+        f"[ContextWindow] Input samples: {len(records)}, output windows: {len(expanded_records)}, "
+        f"dropped_short: {dropped_short}, dropped_invalid: {dropped_invalid}. "
+        f"Saved expanded metadata to: {metadata_out}"
+    )
+    return metadata_out
+
+
 if __name__ == "__main__":
     parser = wan_parser()
     args = parser.parse_args()
+    use_data_process_controls = args.task.endswith(":data_process")
+    if use_data_process_controls:
+        args.dataset_metadata_path = build_context_window_metadata(args)
+        target_fps = args.fps if args.fps is not None else 24
+        fix_frame_rate = args.fps is not None
+        frame_processor = ImageCropAndResize(
+            args.height, args.width, args.max_pixels, 16, 16, resize_mode=args.resize_mode
+        )
+    else:
+        target_fps = 24
+        fix_frame_rate = False
+        frame_processor = None
+
     accelerator = accelerate.Accelerator(
         gradient_accumulation_steps=args.gradient_accumulation_steps,
         kwargs_handlers=[accelerate.DistributedDataParallelKwargs(find_unused_parameters=args.find_unused_parameters)],
@@ -146,9 +325,19 @@ if __name__ == "__main__":
             num_frames=args.num_frames,
             time_division_factor=4 if not args.framewise_decoding else 1,
             time_division_remainder=1 if not args.framewise_decoding else 0,
+            frame_rate=target_fps,
+            fix_frame_rate=fix_frame_rate,
+            frame_processor=frame_processor,
         ),
         special_operator_map={
-            "animate_face_video": ToAbsolutePath(args.dataset_base_path) >> LoadVideo(args.num_frames, 4, 1, frame_processor=ImageCropAndResize(512, 512, None, 16, 16)),
+            "animate_face_video": ToAbsolutePath(args.dataset_base_path) >> LoadVideo(
+                args.num_frames, 4, 1,
+                frame_processor=ImageCropAndResize(
+                    512, 512, None, 16, 16,
+                    resize_mode=args.resize_mode if use_data_process_controls else "crop",
+                ),
+                frame_rate=target_fps, fix_frame_rate=fix_frame_rate,
+            ),
             "input_audio": ToAbsolutePath(args.dataset_base_path) >> LoadAudio(sr=16000),
             "wantodance_music_path": ToAbsolutePath(args.dataset_base_path),
         }

@@ -2,7 +2,7 @@ from transformers.models.siglip.modeling_siglip import SiglipVisionTransformer, 
 from transformers import SiglipImageProcessor, Siglip2VisionModel, Siglip2VisionConfig, Siglip2ImageProcessorFast
 import torch
 
-from diffsynth.core.device.npu_compatible_device import get_device_type
+from lightewm.diffsynth.core.device.npu_compatible_device import get_device_type
 
 
 class Siglip2ImageEncoder(SiglipVisionTransformer):

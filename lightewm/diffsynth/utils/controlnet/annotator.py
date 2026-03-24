@@ -1,6 +1,6 @@
 from typing_extensions import Literal, TypeAlias
 
-from diffsynth.core.device.npu_compatible_device import get_device_type
+from lightewm.diffsynth.core.device.npu_compatible_device import get_device_type
 
 Processor_id: TypeAlias = Literal[
     "canny", "depth", "softedge", "lineart", "lineart_anime", "openpose", "normal", "tile", "none", "inpaint"

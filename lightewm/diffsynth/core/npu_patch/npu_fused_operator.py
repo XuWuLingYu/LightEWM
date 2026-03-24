@@ -7,7 +7,7 @@ except:
 
 
 def rms_norm_forward_npu(self, hidden_states):
-    "npu rms fused operator for RMSNorm.forward from diffsynth\models\general_modules.py"
+    "npu rms fused operator for RMSNorm.forward from lightewm.diffsynth\models\general_modules.py"
     if hidden_states.dtype != self.weight.dtype:
         hidden_states = hidden_states.to(self.weight.dtype)
     return torch_npu.npu_rms_norm(hidden_states, self.weight, self.eps)[0]

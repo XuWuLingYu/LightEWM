@@ -4,3 +4,8 @@ data/
 logs/
 third_parties/
 *.egg-info/
+__pycache__/
+
+# Keep source code under lightewm/diffsynth/core/data trackable.
+!lightewm/diffsynth/core/data/
+!lightewm/diffsynth/core/data/*.py

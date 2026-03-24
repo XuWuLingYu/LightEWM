@@ -1,9 +1,9 @@
 import torch
 from PIL import Image
-from diffsynth.utils.data import save_video, VideoData
-from diffsynth.pipelines.wan_video import WanVideoPipeline, ModelConfig
+from lightewm.diffsynth.utils.data import save_video, VideoData
+from lightewm.diffsynth.pipelines.wan_video import WanVideoPipeline, ModelConfig
 from modelscope import dataset_snapshot_download
-from diffsynth.core import load_state_dict
+from lightewm.diffsynth.core import load_state_dict
 
 
 pipe = WanVideoPipeline.from_pretrained(
