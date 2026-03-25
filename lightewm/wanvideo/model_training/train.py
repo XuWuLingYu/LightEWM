@@ -1,4 +1,5 @@
 import torch, os, argparse, accelerate, warnings, json, math, hashlib, time
+from concurrent.futures import ThreadPoolExecutor, as_completed
 import pandas
 import imageio
 from lightewm.diffsynth.core import UnifiedDataset
@@ -149,6 +150,12 @@ def wan_parser():
         action="store_true",
         help="Data-process stage only. Append one extra tail-aligned window if the tail is not covered by regular windows.",
     )
+    parser.add_argument(
+        "--context_window_wait_timeout",
+        type=int,
+        default=7200,
+        help="Non-zero ranks wait this many seconds for rank-0 context metadata generation. Use <=0 to wait indefinitely.",
+    )
     parser.add_argument("--tokenizer_path", type=str, default=None, help="Path to tokenizer.")
     parser.add_argument("--audio_processor_path", type=str, default=None, help="Path to the audio processor. If provided, the processor will be used for Wan2.2-S2V model.")
     parser.add_argument("--max_timestep_boundary", type=float, default=1.0, help="Max timestep boundary (for mixed models, e.g., Wan-AI/Wan2.2-I2V-A14B).")
@@ -225,33 +232,78 @@ def build_context_window_metadata(args):
 
     local_rank = os.environ.get("LOCAL_RANK", "0")
     if local_rank not in ("0", "-1"):
-        for _ in range(600):
+        timeout = int(getattr(args, "context_window_wait_timeout", 7200))
+        start_time = time.time()
+        while True:
             if os.path.exists(metadata_out):
                 print(f"[ContextWindow] Reusing expanded metadata: {metadata_out}")
                 return metadata_out
+            if timeout > 0 and (time.time() - start_time) > timeout:
+                raise RuntimeError(
+                    f"[ContextWindow] Timed out waiting for rank-0 metadata generation after {timeout}s: {metadata_out}"
+                )
             time.sleep(1)
-        raise RuntimeError(
-            f"[ContextWindow] Timed out waiting for rank-0 metadata generation: {metadata_out}"
-        )
 
     records = load_metadata_as_records(args.dataset_metadata_path)
+    print(f"[ContextWindow] Expanding metadata from {args.dataset_metadata_path}, records={len(records)}")
     window_size = int(args.num_frames)
     stride = int(args.context_window_stride)
     expanded_records = []
     dropped_short = 0
     dropped_invalid = 0
+    used_meta_num_frames = 0
+    progress_start_time = time.time()
 
-    for record in records:
+    frame_counts = {}
+    count_jobs = []
+    for record_id, record in enumerate(records):
+        video_path = record.get("video", None)
+        if not isinstance(video_path, str):
+            continue
+
+        meta_num_frames = record.get("num_frames", None)
+        if meta_num_frames is not None and str(meta_num_frames).strip() != "":
+            try:
+                frame_counts[record_id] = max(int(float(meta_num_frames)), 0)
+                used_meta_num_frames += 1
+                continue
+            except Exception:
+                pass
+
+        absolute_video_path = os.path.join(args.dataset_base_path, video_path)
+        count_jobs.append((record_id, absolute_video_path))
+
+    if len(count_jobs) > 0:
+        num_workers = max(int(os.cpu_count() or 1), 1)
+        print(f"[ContextWindow] num_frames missing for {len(count_jobs)} records, counting frames with {num_workers} threads")
+
+        def _count_frames(job):
+            record_id_, absolute_video_path_ = job
+            try:
+                n = count_available_video_frames(absolute_video_path_, target_fps=args.fps)
+                return record_id_, n, None, absolute_video_path_
+            except Exception as e:
+                return record_id_, -1, str(e), absolute_video_path_
+
+        with ThreadPoolExecutor(max_workers=num_workers) as executor:
+            futures = [executor.submit(_count_frames, job) for job in count_jobs]
+            for done_id, future in enumerate(as_completed(futures), start=1):
+                record_id_, total_frames_, err_msg, absolute_video_path_ = future.result()
+                frame_counts[record_id_] = total_frames_
+                if err_msg is not None:
+                    print(f"[ContextWindow] Failed to read video '{absolute_video_path_}', drop this item. Error: {err_msg}")
+                if done_id % 500 == 0 or done_id == len(count_jobs):
+                    print(f"[ContextWindow] FrameCount progress {done_id}/{len(count_jobs)}")
+
+    for record_id, record in enumerate(records):
         video_path = record.get("video", None)
         if not isinstance(video_path, str):
             expanded_records.append(record)
             continue
-        absolute_video_path = os.path.join(args.dataset_base_path, video_path)
-        try:
-            total_frames = count_available_video_frames(absolute_video_path, target_fps=args.fps)
-        except Exception as e:
+
+        total_frames = frame_counts.get(record_id, -1)
+        if total_frames < 0:
             dropped_invalid += 1
-            print(f"[ContextWindow] Failed to read video '{absolute_video_path}', drop this item. Error: {e}")
             continue
 
         if total_frames < window_size:
@@ -278,13 +330,19 @@ def build_context_window_metadata(args):
             }
             expanded_records.append(expanded)
 
+        if (record_id + 1) % 500 == 0 or (record_id + 1) == len(records):
+            elapsed = max(time.time() - progress_start_time, 1e-6)
+            speed = (record_id + 1) / elapsed
+            print(f"[ContextWindow] Progress {record_id + 1}/{len(records)} (~{speed:.1f} records/s)")
+
     temp_out = metadata_out + f".tmp.{os.getpid()}"
     with open(temp_out, "w") as f:
         json.dump(expanded_records, f)
     os.replace(temp_out, metadata_out)
     print(
         f"[ContextWindow] Input samples: {len(records)}, output windows: {len(expanded_records)}, "
-        f"dropped_short: {dropped_short}, dropped_invalid: {dropped_invalid}. "
+        f"dropped_short: {dropped_short}, dropped_invalid: {dropped_invalid}, "
+        f"used_meta_num_frames: {used_meta_num_frames}. "
         f"Saved expanded metadata to: {metadata_out}"
     )
     return metadata_out

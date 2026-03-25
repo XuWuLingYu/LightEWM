@@ -5,10 +5,11 @@ It is designed to unify world-model training/inference and embodied policy workf
 
 ## Project Status
 
-Early-stage bootstrap.
+Active bootstrap with runnable 1.3B workflows.
 
-- [x] Repository scaffold initialized
-- [x] Initial DiffSynth-Studio code imported into `lightewm/diffsynth` and `lightewm/wanvideo`
+- [x] Wan2.1 1.3B I2V training scripts available
+- [x] Wan2.1 1.3B I2V inference scripts available
+- [x] LIBERO dataset conversion and preprocessing support available
 - [ ] Unified LightEWM training/inference interfaces (API + CLI)
 
 ## TODO Roadmap
@@ -24,16 +25,14 @@ This section is a rolling open-source backlog, not a strict delivery contract.
 
 ### Wan2.1 (1.3B I2V)
 
-- [ ] Create a clean `Wan2.1 1.3B I2V` training entrypoint
-- [ ] Create a clean `Wan2.1 1.3B I2V` inference entrypoint
-- [ ] Provide minimal runnable examples (single GPU and multi-GPU)
+- [x] Create clean `Wan2.1 1.3B I2V` training/inference entrypoints
+- [x] Provide minimal runnable examples (single GPU and multi-GPU)
 - [ ] Add model/data validation checks and common failure diagnostics
 
 ### Embodied Benchmarks (CALVIN / LIBERO)
 
-- [ ] Define shared dataset adapter interfaces for embodied tasks
+- [x] Add LIBERO data preprocessing and dataloader integration
 - [ ] Add CALVIN data preprocessing and dataloader integration
-- [ ] Add LIBERO data preprocessing and dataloader integration
 - [ ] Implement train/eval pipelines with benchmark-friendly metrics
 
 ### Dev Experience
@@ -53,9 +52,7 @@ This section is a rolling open-source backlog, not a strict delivery contract.
 
 ```text
 LightEWM/
-├── lightewm/
-│   ├── diffsynth/      # Core diffusion/world-model components
-│   └── wanvideo/       # Wan-related training/inference scripts and examples
+├── lightewm/           # Core package
 ├── docs/
 │   ├── install.md
 │   └── quickstart.md
@@ -76,10 +73,10 @@ pip install -e .
 ## Notes
 
 - The codebase is under active restructuring.
-- Some scripts and arguments are still inherited from DiffSynth-Studio and will be progressively normalized to LightEWM conventions.
 
 ## Reference
 
+- DiffSynth-Studio: <https://github.com/modelscope/DiffSynth-Studio>
 - Wan documentation: <https://diffsynth-studio-doc.readthedocs.io/en/latest/Model_Details/Wan.html>
 
 ## License

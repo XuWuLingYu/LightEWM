@@ -68,8 +68,6 @@ Set variables:
 ```bash
 cd /mnt/world_foundational_model/wfm_ckp-fileset/qianzezhong/LightEWM
 
-ENV_PREFIX=/mnt/world_foundational_model/wfm_envs-fileset/qianzezhong/lightewm
-
 MODEL_PATHS='["checkpoints/Wan2.1-I2V-1.3B/diffusion_pytorch_model.safetensors","checkpoints/Wan2.1-I2V-1.3B/models_t5_umt5-xxl-enc-bf16.pth","checkpoints/Wan2.1-I2V-1.3B/Wan2.1_VAE.pth","checkpoints/Wan2.1-I2V-1.3B/models_clip_open-clip-xlm-roberta-large-vit-huge-14.pth"]'
 
 DATASET_BASE=data/your_dataset
@@ -83,10 +81,9 @@ CONTEXT_STRIDE=81
 CONTEXT_TAIL_ALIGN=
 ```
 
-### 4.1 Full cache
+### 4.1 Cache
 
 ```bash
-conda run -p "$ENV_PREFIX" \
 accelerate launch lightewm/wanvideo/model_training/train.py \
   --dataset_base_path "$DATASET_BASE" \
   --dataset_metadata_path "$DATASET_META" \
@@ -94,7 +91,7 @@ accelerate launch lightewm/wanvideo/model_training/train.py \
   --width 832 \
   --dataset_repeat 1 \
   --model_paths "$MODEL_PATHS" \
-  --output_path "./models/cache/Wan2.1-I2V-1.3B_full_cache" \
+  --output_path "./data/libero_i2v_train/latent_cache" \
   --trainable_models "dit" \
   --extra_inputs "input_image,end_image" \
   --resize_mode "$RESIZE_MODE" \
@@ -105,29 +102,7 @@ accelerate launch lightewm/wanvideo/model_training/train.py \
   --task "sft:data_process"
 ```
 
-### 4.2 LoRA cache
-
-```bash
-conda run -p "$ENV_PREFIX" \
-accelerate launch lightewm/wanvideo/model_training/train.py \
-  --dataset_base_path "$DATASET_BASE" \
-  --dataset_metadata_path "$DATASET_META" \
-  --height 480 \
-  --width 832 \
-  --dataset_repeat 1 \
-  --model_paths "$MODEL_PATHS" \
-  --output_path "./models/cache/Wan2.1-I2V-1.3B_lora_cache" \
-  --lora_base_model "dit" \
-  --lora_target_modules "q,k,v,o,ffn.0,ffn.2" \
-  --lora_rank 32 \
-  --extra_inputs "input_image,end_image" \
-  --resize_mode "$RESIZE_MODE" \
-  --context_window_short_video_mode "$CONTEXT_SHORT_MODE" \
-  --context_window_stride "$CONTEXT_STRIDE" \
-  $CONTEXT_TAIL_ALIGN \
-  ${FPS:+--fps "$FPS"} \
-  --task "sft:data_process"
-```
+Use this cache for full I2V fine-tuning.
 
 
 ## 5) Multi-GPU notes

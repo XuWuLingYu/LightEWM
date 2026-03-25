@@ -2,6 +2,7 @@ envs/
 checkpoints/
 data/
 logs/
+models/
 third_parties/
 *.egg-info/
 __pycache__/
