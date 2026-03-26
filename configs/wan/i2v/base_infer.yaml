@@ -1,0 +1,38 @@
+task: infer
+
+runner:
+  class_path: lightewm.runner.wan.wan_i2v_pipeline.WanInferRunner
+  params:
+    output_dir: ./outputs/wan_i2v_infer
+    fps: 16
+    quality: 5
+    seed: 0
+    infer_kwargs:
+      negative_prompt: ""
+      height: 480
+      width: 832
+      num_frames: 81
+      cfg_scale: 5.0
+      num_inference_steps: 50
+      tiled: true
+
+model:
+  class_path: lightewm.runner.wan.wan_i2v_pipeline.WanI2VInferModel
+  params:
+    device: cuda
+    torch_dtype: bfloat16
+    model_paths:
+      - checkpoints/Wan2.1-I2V-1.3B/diffusion_pytorch_model.safetensors
+      - checkpoints/Wan2.1-I2V-1.3B/models_t5_umt5-xxl-enc-bf16.pth
+      - checkpoints/Wan2.1-I2V-1.3B/Wan2.1_VAE.pth
+      - checkpoints/Wan2.1-I2V-1.3B/models_clip_open-clip-xlm-roberta-large-vit-huge-14.pth
+
+dataset:
+  class_path: lightewm.dataset.libero_infer.LiberoInferenceDataset
+  params:
+    base_path: data/your_dataset
+    metadata_path: data/your_dataset/metadata.csv
+    video_key: video
+    prompt_key: prompt
+    demo_id_key: demo_id
+    camera_key_col: camera_key

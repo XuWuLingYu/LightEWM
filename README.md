@@ -1,78 +1,75 @@
 # LightEWM
 
-LightEWM is an open-source, out-of-the-box framework for embodied world models and action learning.
-It is designed to unify world-model training/inference and embodied policy workflows in one practical codebase.
+LightEWM is an open-source training and inference framework for embodied world models.
+Current active target: **Wan2.1-Fun-1.3B I2V** with **LIBERO** preprocessing, cache generation, full training, and inference.
 
-## Project Status
+## Active Scope
 
-Active bootstrap with runnable 1.3B workflows.
+- Wan2.1-Fun-1.3B I2V cache preprocessing (`text + input_image`)
+- Wan2.1-Fun-1.3B I2V full training
+- Wan2.1-Fun-1.3B I2V LIBERO batch inference
 
-- [x] Wan2.1 1.3B I2V training scripts available
-- [x] Wan2.1 1.3B I2V inference scripts available
-- [x] LIBERO dataset conversion and preprocessing support available
-- [ ] Unified LightEWM training/inference interfaces (API + CLI)
-
-## TODO Roadmap
-
-This section is a rolling open-source backlog, not a strict delivery contract.
-
-### Core Framework
-
-- [ ] Define canonical config schema for model, data, training, and inference
-- [ ] Build unified runner interfaces for train/eval/infer
-- [ ] Standardize experiment logging, checkpoints, and resume behavior
-- [ ] Add reproducibility controls (seed, deterministic modes, env capture)
-
-### Wan2.1 (1.3B I2V)
-
-- [x] Create clean `Wan2.1 1.3B I2V` training/inference entrypoints
-- [x] Provide minimal runnable examples (single GPU and multi-GPU)
-- [ ] Add model/data validation checks and common failure diagnostics
-
-### Embodied Benchmarks (CALVIN / LIBERO)
-
-- [x] Add LIBERO data preprocessing and dataloader integration
-- [ ] Add CALVIN data preprocessing and dataloader integration
-- [ ] Implement train/eval pipelines with benchmark-friendly metrics
-
-### Dev Experience
-
-- [ ] Write a real quickstart in `docs/quickstart.md`
-- [ ] Add examples with expected directory layout and command templates
-- [ ] Add contribution guide (`CONTRIBUTING.md`) and coding conventions
-- [ ] Add issue templates for bug reports and feature requests
-
-### Quality
-
-- [ ] Add smoke tests for key training/inference paths
-- [ ] Add CI checks for lint, import sanity, and basic execution
-- [ ] Track compatibility matrix (CUDA/PyTorch/driver)
-
-## Repository Layout
+## New Code Layout
 
 ```text
 LightEWM/
-├── lightewm/           # Core package
+├── lightewm/
+│   ├── model/
+│   ├── utils/
+│   ├── dataset/
+│   ├── runner/
+│   └── configs/
+├── configs/
+│   ├── wan/i2v/
+│   └── libero/
+├── scripts/
 ├── docs/
-│   ├── install.md
-│   └── quickstart.md
-├── data/
-├── checkpoints/
-├── logs/
-└── pyproject.toml
+└── run.py
 ```
 
-## Installation
+Legacy `diffsynth` / `wanvideo` trees were moved to `trash_code/` and are no longer active runtime dependencies.
+
+## Quick Start
+
+Install:
 
 ```bash
-git clone https://github.com/XuWuLingYu/LightEWM.git
-cd LightEWM
 pip install -e .
 ```
 
-## Notes
+Run by config:
 
-- The codebase is under active restructuring.
+```bash
+# LIBERO cache generation
+accelerate launch run.py --config configs/libero/cache.yaml
+
+# LIBERO full training
+accelerate launch run.py --config configs/libero/train_full.yaml
+
+# LIBERO inference
+python run.py --config configs/libero/infer.yaml
+```
+
+Run outputs are organized as:
+
+```text
+logs/{config_name}/{timestamp}/
+```
+
+W&B logging is enabled by default in training configs.
+
+```bash
+wandb login
+# or disable globally
+export WANDB_MODE=disabled
+```
+
+## Docs
+
+- [Install](docs/install.md)
+- [Data Guide](docs/data.md)
+- [Training Quickstart](docs/quickstart.md)
+- [LIBERO Guide](docs/libero.md)
 
 ## Reference
 

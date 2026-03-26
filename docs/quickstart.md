@@ -1,66 +1,62 @@
-# Training Quickstart (Wan2.1 1.3B I2V)
+# Training Quickstart (Wan2.1-Fun-1.3B I2V)
 
-This page contains training commands only.
+This page focuses on training commands.
 
-For dataset preparation and preprocessing, see:
-- [Data Guide](./data.md)
+For dataset conversion/preprocessing details, see [Data Guide](./data.md) and [LIBERO Guide](./libero.md).
 
-All commands use:
-`lightewm/wanvideo/model_training/train.py`
-
-
-## 1) Set variables
+## 0) W&B setup (optional but enabled by default in train configs)
 
 ```bash
-cd /mnt/world_foundational_model/wfm_ckp-fileset/qianzezhong/LightEWM
+# enable online logging
+wandb login
 
-MODEL_PATHS='["checkpoints/Wan2.1-I2V-1.3B/diffusion_pytorch_model.safetensors","checkpoints/Wan2.1-I2V-1.3B/models_t5_umt5-xxl-enc-bf16.pth","checkpoints/Wan2.1-I2V-1.3B/Wan2.1_VAE.pth","checkpoints/Wan2.1-I2V-1.3B/models_clip_open-clip-xlm-roberta-large-vit-huge-14.pth"]'
-
-DATASET_BASE=data/your_dataset
-DATASET_META=data/your_dataset/metadata.csv
+# disable W&B logging globally
+export WANDB_MODE=disabled
 ```
 
-
-## 2) I2V full fine-tuning (direct)
+## 1) Run full training by config
 
 ```bash
-accelerate launch lightewm/wanvideo/model_training/train.py \
-  --dataset_base_path "$DATASET_BASE" \
-  --dataset_metadata_path "$DATASET_META" \
-  --height 480 \
-  --width 832 \
-  --dataset_repeat 100 \
-  --model_paths "$MODEL_PATHS" \
-  --learning_rate 1e-5 \
-  --num_epochs 2 \
-  --remove_prefix_in_ckpt "pipe.dit." \
-  --output_path "./models/train/Wan2.1-I2V-1.3B_full" \
-  --trainable_models "dit" \
-  --extra_inputs "input_image,end_image" \
-  --use_gradient_checkpointing
+# generic base config (override dataset paths as needed)
+accelerate launch run.py --config configs/wan/i2v/base_train_full.yaml
+
+# LIBERO training config
+accelerate launch run.py --config configs/libero/train_full.yaml
 ```
 
+## 2) Useful overrides
 
-## 3) I2V full fine-tuning (from preprocessed cache)
+Run output layout is standardized automatically:
+
+```text
+logs/{config_name}/{timestamp}/
+```
+
+For train runs, this folder contains:
+- `checkpoint_XXXXXXXX.safetensors`
+- `merged_config.yaml`
+- `config_sources.txt`
+- `configs/` (current config + all inherited base configs)
 
 ```bash
-accelerate launch lightewm/wanvideo/model_training/train.py \
-  --dataset_base_path "./data/libero_i2v_train/latent_cache" \
-  --height 480 \
-  --width 832 \
-  --dataset_repeat 100 \
-  --model_paths "$MODEL_PATHS" \
-  --learning_rate 1e-5 \
-  --num_epochs 2 \
-  --remove_prefix_in_ckpt "pipe.dit." \
-  --output_path "./models/train/Wan2.1-I2V-1.3B_full_cached" \
-  --trainable_models "dit" \
-  --task "sft:train" \
-  --use_gradient_checkpointing
+# change epochs / lr
+accelerate launch run.py \
+  --config configs/libero/train_full.yaml \
+  --overrides runner.params.num_epochs=5 runner.params.learning_rate=5e-6
+
+# change per-process batch size
+accelerate launch run.py \
+  --config configs/libero/train_full.yaml \
+  --overrides runner.params.batch_size=2
+
+# disable wandb for a single run
+accelerate launch run.py \
+  --config configs/libero/train_full.yaml \
+  --overrides runner.params.wandb_enabled=false
 ```
 
+## 3) One-line helper script
 
-## 4) Multi-GPU notes
-
-- Both preprocessing and training support multi-GPU via `accelerate launch`.
-- Use your own `accelerate config` / `--config_file` to control process count and strategy.
+```bash
+bash scripts/train_libero_full.sh
+```
