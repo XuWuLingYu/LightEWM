@@ -1,0 +1,10 @@
+_base_: ../wan/i2v/base_cache.yaml
+
+dataset:
+  params:
+    dataset_base_path: data/libero_i2v_train
+    dataset_metadata_path: data/libero_i2v_train/metadata.csv
+
+runner:
+  params:
+    output_path: ./data/libero_i2v_train/latent_cache
