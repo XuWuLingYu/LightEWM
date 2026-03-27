@@ -2,7 +2,7 @@
 
 # LightEWM
 
-LightEWM is an open-source training and inference framework for embodied world models.
+**LightEWM: Light Embodied World Model** is an open-source training and inference framework for embodied world models.
 Our current focus is **Wan2.1-1.3B I2V**, including **LIBERO** preprocessing, latent-cache generation, full training, and inference.
 
 ## 🧭 TODO
