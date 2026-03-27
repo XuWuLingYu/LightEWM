@@ -60,3 +60,13 @@ accelerate launch run.py \
 ```bash
 bash scripts/train_libero_full.sh
 ```
+
+## 4) Inference (optional custom checkpoint)
+
+```bash
+# default inference (official Wan2.1-Fun-1.3B I2V checkpoint from config)
+python run.py --config configs/libero/infer.yaml
+
+# override with your finetuned DiT checkpoint (.safetensors)
+python run.py --config configs/libero/infer.yaml --ckpt /path/to/your/ckpt.safetensors
+```

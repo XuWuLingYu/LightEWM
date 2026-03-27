@@ -45,26 +45,19 @@ export WANDB_MODE=disabled
 ```
 
 ```bash
-accelerate launch run.py --config configs/libero/train_full.yaml
-```
-
-Or:
-
-```bash
 bash scripts/train_libero_full.sh
 ```
 
 ## 5) Batch inference
 
 ```bash
-python run.py --config configs/libero/infer.yaml
-```
-
-Or:
-
-```bash
 bash scripts/infer_libero.sh
+
+# optional: pass the same checkpoint override through the helper script
+bash scripts/infer_libero.sh --ckpt /path/to/your/ckpt.safetensors
 ```
+
+If `--ckpt` is not provided, inference uses the default official Wan2.1-Fun-1.3B I2V checkpoint from config.
 
 Output naming (default):
 - `<row_id>__<demo_id>__<camera_key>.mp4`

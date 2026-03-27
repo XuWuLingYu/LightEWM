@@ -48,6 +48,9 @@ accelerate launch run.py --config configs/libero/train_full.yaml
 
 # LIBERO inference
 python run.py --config configs/libero/infer.yaml
+
+# LIBERO inference with a custom finetuned DiT checkpoint (.safetensors)
+python run.py --config configs/libero/infer.yaml --ckpt /path/to/your/ckpt.safetensors
 ```
 
 Run outputs are organized as:

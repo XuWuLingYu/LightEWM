@@ -87,6 +87,23 @@ def apply_overrides(cfg: dict, overrides: list[str]) -> dict:
     return cfg
 
 
+def apply_ckpt_override(cfg: dict, ckpt_path: str) -> dict:
+    if not ckpt_path.endswith(".safetensors"):
+        raise ValueError(f"--ckpt must be a .safetensors file, got: {ckpt_path}")
+
+    model_cfg = cfg.setdefault("model", {})
+    model_params = model_cfg.setdefault("params", {})
+    model_paths = model_params.get("model_paths")
+    if model_paths is None:
+        raise ValueError("Config has no model.params.model_paths to apply --ckpt override.")
+    if not isinstance(model_paths, list) or len(model_paths) == 0:
+        raise ValueError("model.params.model_paths must be a non-empty list for --ckpt override.")
+
+    model_paths[0] = ckpt_path
+    model_params["model_paths"] = model_paths
+    return cfg
+
+
 def derive_config_name(config_path: str):
     p = Path(config_path)
     parent = p.parent.name
@@ -167,6 +184,7 @@ def main():
     parser = argparse.ArgumentParser(description="LightEWM unified config runner")
     parser.add_argument("--config", type=str, required=True, help="Path to YAML config")
     parser.add_argument("--overrides", nargs="*", default=[], help="Dotlist overrides, e.g. runner.params.fps=12")
+    parser.add_argument("--ckpt", type=str, default=None, help="Optional .safetensors DiT checkpoint override for model.params.model_paths[0]")
     parser.add_argument("--print-config", action="store_true", help="Print merged config")
     parser.add_argument("--dry-run", action="store_true", help="Validate config without running")
     args = parser.parse_args()
@@ -174,6 +192,8 @@ def main():
     cfg, source_paths = load_config_with_base(args.config)
     if args.overrides:
         cfg = apply_overrides(cfg, args.overrides)
+    if args.ckpt:
+        cfg = apply_ckpt_override(cfg, args.ckpt)
 
     config_name = derive_config_name(args.config)
     run_id = resolve_run_id(config_name)
