@@ -6,7 +6,9 @@ This note documents the current minimal code path for Wan 1.3B I2V in LightEWM.
 
 - DiT backbone: `lightewm/model/wan/wan_video_dit.py`
 - I2V pipeline logic: `lightewm/model/wan/pipeline.py`
-- Training/inference wrappers: `lightewm/runner/wan/wan_i2v_pipeline.py`
+- Training wrapper: `lightewm/runner/wan/wan_training.py`
+- Data preprocessing runner: `lightewm/runner/wan/wan_data_preprocess.py`
+- Inference runner: `lightewm/runner/wan/wan_infer.py`
 - Model loading registry: `lightewm/configs/model_configs.py`
 
 If you want to change model architecture behavior, start from `wan_video_dit.py`.
@@ -15,15 +17,14 @@ If you want to change training/inference input-output flow, start from `pipeline
 ## 2) Current default I2V runtime path
 
 - Config entry:
-  - Train: `configs/wan/i2v/base_train_full.yaml`
-  - Cache: `configs/wan/i2v/base_cache.yaml`
-  - Infer: `configs/wan/i2v/base_infer.yaml`
+  - LIBERO: `examples/LIBERO/*.yaml`
+  - Custom dataset: `examples/CustomDataset/*.yaml`
 - Model class:
   - `lightewm.model.wan.pipeline.WanVideoPipeline`
 - Runner classes (orchestration only):
-  - `lightewm.runner.wan.wan_i2v_pipeline.WanTrainRunner`
-  - `lightewm.runner.wan.wan_i2v_pipeline.WanCacheRunner`
-  - `lightewm.runner.wan.wan_i2v_pipeline.WanInferRunner`
+  - `lightewm.runner.wan.wan_training.WanTrainRunner`
+  - `lightewm.runner.wan.wan_data_preprocess.WanCacheRunner`
+  - `lightewm.runner.wan.wan_infer.WanInferRunner`
 
 ## 3) Core checkpoints used by default
 
@@ -45,7 +46,9 @@ Optional extension modules (S2V/VACE/VAP/LongCat/etc.) were removed from active 
 python -m py_compile \
   lightewm/model/wan/wan_video_dit.py \
   lightewm/model/wan/pipeline.py \
-  lightewm/runner/wan/wan_i2v_pipeline.py
+  lightewm/runner/wan/wan_training.py \
+  lightewm/runner/wan/wan_data_preprocess.py \
+  lightewm/runner/wan/wan_infer.py
 
-python run.py --config configs/libero/infer.yaml --dry-run
+python run.py --config examples/LIBERO/infer.yaml --dry-run
 ```

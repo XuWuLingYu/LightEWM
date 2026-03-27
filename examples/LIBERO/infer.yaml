@@ -1,12 +1,13 @@
 task: infer
 
 runner:
-  class_path: lightewm.runner.wan.wan_i2v_pipeline.WanInferRunner
+  class_path: lightewm.runner.wan.wan_infer.WanInferRunner
   params:
-    output_dir: ./outputs/wan_i2v_infer
+    output_dir: ./outputs/libero_infer
     fps: 16
     quality: 5
     seed: 0
+    input_image_resize_mode: letterbox
     infer_kwargs:
       negative_prompt: ""
       height: 480
@@ -30,8 +31,8 @@ model:
 dataset:
   class_path: lightewm.dataset.libero_infer.LiberoInferenceDataset
   params:
-    base_path: data/your_dataset
-    metadata_path: data/your_dataset/metadata.csv
+    base_path: data/libero_i2v_train
+    metadata_path: data/libero_i2v_train/metadata.csv
     video_key: video
     prompt_key: prompt
     demo_id_key: demo_id

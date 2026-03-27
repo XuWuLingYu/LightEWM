@@ -1,7 +1,6 @@
 import os, torch
 from tqdm import tqdm
 from accelerate import Accelerator
-from .training_module import DiffusionTrainingModule
 from ..utils.logger import ModelLogger
 
 
@@ -48,7 +47,7 @@ def _validate_cached_sample(sample, expected_latent_frames: int = 21):
 def launch_training_task(
     accelerator: Accelerator,
     dataset: torch.utils.data.Dataset,
-    model: DiffusionTrainingModule,
+    model: torch.nn.Module,
     model_logger: ModelLogger,
     learning_rate: float = 1e-5,
     weight_decay: float = 1e-2,
@@ -119,7 +118,7 @@ def launch_training_task(
 def launch_data_process_task(
     accelerator: Accelerator,
     dataset: torch.utils.data.Dataset,
-    model: DiffusionTrainingModule,
+    model: torch.nn.Module,
     model_logger: ModelLogger,
     num_workers: int = 8,
     args = None,

@@ -1,4 +1,4 @@
-from lightewm.runner.pipeline_factory import instantiate_component_from_section
+from lightewm.runner.runner_util.instantiation import instantiate_component_from_section
 
 
 class BaseRunnerPipeline:

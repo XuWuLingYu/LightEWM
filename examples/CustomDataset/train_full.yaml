@@ -1,7 +1,7 @@
 task: train
 
 runner:
-  class_path: lightewm.runner.wan.wan_i2v_pipeline.WanTrainRunner
+  class_path: lightewm.runner.wan.wan_training.WanTrainRunner
   params:
     output_path: ./logs/train/Wan1.3B-I2V
     height: 480
@@ -36,8 +36,8 @@ model:
 dataset:
   class_path: lightewm.dataset.unified_dataset.UnifiedDataset
   params:
-    dataset_base_path: data/your_dataset
-    dataset_metadata_path: data/your_dataset/metadata.csv
+    dataset_base_path: ./data/your_dataset/latent_cache
+    dataset_metadata_path: null
 
 runtime:
   params:

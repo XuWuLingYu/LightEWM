@@ -37,11 +37,11 @@ hf download alibaba-pai/Wan2.1-Fun-1.3B-InP \
 
 ## 🚀 Quick Start on LIBERO
 
-See [LIBERO data & training guide](docs/libero.md).
+See [LIBERO example](examples/LIBERO/README.md).
 
 ## 📦 Run on Custom Dataset
 
-See [Data Guide](docs/data.md) and [Training Quickstart](docs/quickstart.md).
+See [CustomDataset example](examples/CustomDataset/README.md).
 
 ## 📚 Reference
 

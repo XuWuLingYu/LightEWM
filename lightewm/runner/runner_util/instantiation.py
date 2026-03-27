@@ -2,16 +2,13 @@ import importlib
 import inspect
 import json
 import os
-from typing import Iterable, TYPE_CHECKING
+from typing import Iterable
 
 from lightewm.utils.config import ConfigNode
 
-if TYPE_CHECKING:
-    from lightewm.model.wan.pipeline import WanVideoPipeline
-
 
 def import_class(class_path: str):
-    module_name, class_name = class_path.rsplit('.', 1)
+    module_name, class_name = class_path.rsplit(".", 1)
     module = importlib.import_module(module_name)
     return getattr(module, class_name)
 
@@ -41,12 +38,20 @@ def instantiate_component(class_path: str, component_config: ConfigNode):
     cls = import_class(class_path)
     if _should_init_with_config(cls):
         return cls(component_config)
-    kwargs = {k: v for k, v in component_config.items() if k not in {"class_path", "section_name", "full_config"}}
+    kwargs = {
+        k: v
+        for k, v in component_config.items()
+        if k not in {"class_path", "section_name", "full_config"}
+    }
     return cls(**kwargs)
 
 
 def instantiate_component_from_section(section, full_config, section_name: str):
-    component_config = _section_params_as_config(section, full_config=full_config, section_name=section_name)
+    component_config = _section_params_as_config(
+        section,
+        full_config=full_config,
+        section_name=section_name,
+    )
     component = instantiate_component(section.class_path, component_config)
     return component, component_config
 
@@ -88,6 +93,8 @@ def resolve_local_wan_tokenizer_path(model_paths):
     for path in paths:
         root = os.path.dirname(path)
         candidate = os.path.join(root, "google", "umt5-xxl")
-        if os.path.exists(os.path.join(candidate, "tokenizer.json")) and os.path.exists(os.path.join(candidate, "spiece.model")):
+        if os.path.exists(os.path.join(candidate, "tokenizer.json")) and os.path.exists(
+            os.path.join(candidate, "spiece.model")
+        ):
             return candidate
     return None

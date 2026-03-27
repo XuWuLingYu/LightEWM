@@ -1,7 +1,7 @@
 task: cache
 
 runner:
-  class_path: lightewm.runner.wan.wan_i2v_pipeline.WanCacheRunner
+  class_path: lightewm.runner.wan.wan_data_preprocess.WanCacheRunner
   params:
     output_path: ./data/libero_i2v_train/latent_cache
     height: 480
@@ -31,8 +31,8 @@ model:
 dataset:
   class_path: lightewm.dataset.unified_dataset.UnifiedDataset
   params:
-    dataset_base_path: data/your_dataset
-    dataset_metadata_path: data/your_dataset/metadata.csv
+    dataset_base_path: data/libero_i2v_train
+    dataset_metadata_path: data/libero_i2v_train/metadata.csv
 
 runtime:
   params:

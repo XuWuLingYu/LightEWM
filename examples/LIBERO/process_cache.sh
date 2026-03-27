@@ -8,7 +8,7 @@ log() {
 }
 
 REPO_ROOT=${REPO_ROOT:-/mnt/world_foundational_model/wfm_ckp-fileset/qianzezhong/LightEWM}
-CONFIG_PATH=${CONFIG_PATH:-configs/libero/cache.yaml}
+CONFIG_PATH=${CONFIG_PATH:-examples/LIBERO/cache.yaml}
 NUM_MACHINES=${NUM_MACHINES:-1}
 MIXED_PRECISION=${MIXED_PRECISION:-no}
 DYNAMO_BACKEND=${DYNAMO_BACKEND:-no}
@@ -43,7 +43,7 @@ if [[ -z "${NUM_PROCESSES:-}" ]]; then
   fi
 fi
 
-log "Starting LIBERO cache preprocessing via config."
+log "Starting LIBERO cache preprocessing via example config."
 log "Repo root: $REPO_ROOT"
 log "Config: $CONFIG_PATH"
 log "Detected GPUs: $gpu_count"
