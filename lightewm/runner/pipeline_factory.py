@@ -4,8 +4,6 @@ import json
 import os
 from typing import Iterable, TYPE_CHECKING
 
-import torch
-
 from lightewm.utils.config import ConfigNode
 
 if TYPE_CHECKING:
@@ -93,27 +91,3 @@ def resolve_local_wan_tokenizer_path(model_paths):
         if os.path.exists(os.path.join(candidate, "tokenizer.json")) and os.path.exists(os.path.join(candidate, "spiece.model")):
             return candidate
     return None
-
-
-def build_wan_i2v_infer_pipeline(model_params: dict) -> "WanVideoPipeline":
-    from lightewm.model.wan.pipeline import WanVideoPipeline
-    from lightewm.utils.loader import ModelConfig
-    model_paths = model_params["model_paths"]
-    device = model_params.get("device", "cuda")
-    torch_dtype_str = model_params.get("torch_dtype", "bfloat16")
-    torch_dtype = getattr(torch, torch_dtype_str)
-    tokenizer_path = model_params.get("tokenizer_path") or resolve_local_wan_tokenizer_path(model_paths)
-
-    model_configs = [ModelConfig(path=p) for p in model_paths]
-    tokenizer_config = (
-        ModelConfig(path=tokenizer_path)
-        if tokenizer_path
-        else ModelConfig(model_id="Wan-AI/Wan2.1-T2V-1.3B", origin_file_pattern="google/umt5-xxl/")
-    )
-
-    return WanVideoPipeline.from_pretrained(
-        torch_dtype=torch_dtype,
-        device=device,
-        model_configs=model_configs,
-        tokenizer_config=tokenizer_config,
-    )

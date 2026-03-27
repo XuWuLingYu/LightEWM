@@ -135,11 +135,26 @@ class DiffusionTrainingModule(torch.nn.Module):
             return {}
     
     def parse_model_configs(self, model_paths, model_id_with_origin_paths, fp8_models=None, offload_models=None, device="cpu"):
-        fp8_models = [] if fp8_models is None else fp8_models.split(",")
-        offload_models = [] if offload_models is None else offload_models.split(",")
+        if fp8_models is None:
+            fp8_models = []
+        elif isinstance(fp8_models, str):
+            fp8_models = [item for item in fp8_models.split(",") if item]
+        else:
+            fp8_models = list(fp8_models)
+
+        if offload_models is None:
+            offload_models = []
+        elif isinstance(offload_models, str):
+            offload_models = [item for item in offload_models.split(",") if item]
+        else:
+            offload_models = list(offload_models)
+
         model_configs = []
         if model_paths is not None:
-            model_paths = json.loads(model_paths)
+            if isinstance(model_paths, str):
+                model_paths = json.loads(model_paths)
+            else:
+                model_paths = list(model_paths)
             for path in model_paths:
                 vram_config = self.parse_vram_config(
                     fp8=path in fp8_models,
@@ -148,7 +163,10 @@ class DiffusionTrainingModule(torch.nn.Module):
                 )
                 model_configs.append(ModelConfig(path=path, **vram_config))
         if model_id_with_origin_paths is not None:
-            model_id_with_origin_paths = model_id_with_origin_paths.split(",")
+            if isinstance(model_id_with_origin_paths, str):
+                model_id_with_origin_paths = [item for item in model_id_with_origin_paths.split(",") if item]
+            else:
+                model_id_with_origin_paths = list(model_id_with_origin_paths)
             for model_id_with_origin_path in model_id_with_origin_paths:
                 vram_config = self.parse_vram_config(
                     fp8=model_id_with_origin_path in fp8_models,

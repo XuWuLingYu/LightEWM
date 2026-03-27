@@ -1265,21 +1265,16 @@ class WanVideoVAE(nn.Module):
 
     @staticmethod
     def state_dict_converter():
-        return WanVideoVAEStateDictConverter()
+        return WanVideoVAEStateDictConverter
 
 
-class WanVideoVAEStateDictConverter:
-
-    def __init__(self):
-        pass
-
-    def from_civitai(self, state_dict):
-        state_dict_ = {}
-        if 'model_state' in state_dict:
-            state_dict = state_dict['model_state']
-        for name in state_dict:
-            state_dict_['model.' + name] = state_dict[name]
-        return state_dict_
+def WanVideoVAEStateDictConverter(state_dict):
+    state_dict_ = {}
+    if "model_state" in state_dict:
+        state_dict = state_dict["model_state"]
+    for name in state_dict:
+        state_dict_["model." + name] = state_dict[name]
+    return state_dict_
 
 
 class VideoVAE38_(VideoVAE_):

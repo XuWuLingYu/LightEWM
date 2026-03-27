@@ -29,13 +29,13 @@ MODEL_CONFIGS = [
         "model_hash": "ccc42284ea13e1ad04693284c7a09be6",
         "model_name": "wan_video_vae",
         "model_class": "lightewm.model.wan.wan_video_vae.WanVideoVAE",
-        "state_dict_converter": "lightewm.model.wan.state_dict_converters.wan_video_vae.WanVideoVAEStateDictConverter",
+        "state_dict_converter": "lightewm.model.wan.wan_video_vae.WanVideoVAEStateDictConverter",
     },
     {
         # Shared CLIP image encoder
         "model_hash": "5941c53e207d62f20f9025686193c40b",
         "model_name": "wan_video_image_encoder",
         "model_class": "lightewm.model.wan.wan_video_image_encoder.WanImageEncoder",
-        "state_dict_converter": "lightewm.model.wan.state_dict_converters.wan_video_image_encoder.WanImageEncoderStateDictConverter",
+        "state_dict_converter": "lightewm.model.wan.wan_video_image_encoder.WanImageEncoderStateDictConverter",
     },
 ]

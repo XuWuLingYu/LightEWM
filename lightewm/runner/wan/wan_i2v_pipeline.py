@@ -15,13 +15,17 @@ from tqdm import tqdm
 
 from lightewm.dataset import UnifiedDataset
 from lightewm.dataset.operators import LoadVideo, LoadAudio, ImageCropAndResize, ToAbsolutePath
-from lightewm.model.wan.training_module import WanTrainingModule
+from lightewm.model.loss import DirectDistillLoss, FlowMatchSFTLoss
+from lightewm.model.wan.pipeline import WanVideoPipeline
 from lightewm.runner.pipeline_factory import (
     flatten_config_params,
     instantiate_component_from_section,
+    resolve_local_wan_tokenizer_path,
 )
 from lightewm.runner.loops import launch_training_task, launch_data_process_task
+from lightewm.runner.training_module import DiffusionTrainingModule
 from lightewm.utils.data import save_video
+from lightewm.utils.loader import ModelConfig
 from lightewm.utils.logger import ModelLogger
 from lightewm.utils.parsers import build_wan_i2v_parser
 os.environ["TOKENIZERS_PARALLELISM"] = "false"
@@ -71,13 +75,157 @@ WAN_I2V_DEFAULTS = {
     "max_timestep_boundary": 1.0,
     "min_timestep_boundary": 0.0,
     "initialize_model_on_cpu": False,
-    "framewise_decoding": False,
     "wandb_enabled": False,
     "wandb_project": "LightEWM",
     "wandb_run_name": None,
     "wandb_mode": "online",
     "wandb_log_every": 10,
 }
+
+
+def _parse_wan_model_configs(
+    model_paths=None,
+    model_id_with_origin_paths=None,
+    fp8_models=None,
+    offload_models=None,
+    device="cpu",
+):
+    helper = DiffusionTrainingModule()
+    return helper.parse_model_configs(
+        model_paths,
+        model_id_with_origin_paths,
+        fp8_models=fp8_models,
+        offload_models=offload_models,
+        device=device,
+    )
+
+
+def build_wan_i2v_pipeline_from_params(model_params: dict, device_override=None) -> WanVideoPipeline:
+    model_paths = model_params.get("model_paths")
+    model_id_with_origin_paths = model_params.get("model_id_with_origin_paths")
+    fp8_models = model_params.get("fp8_models")
+    offload_models = model_params.get("offload_models")
+    tokenizer_path = model_params.get("tokenizer_path")
+    audio_processor_path = model_params.get("audio_processor_path")
+    torch_dtype_value = model_params.get("torch_dtype", "bfloat16")
+    torch_dtype = getattr(torch, torch_dtype_value) if isinstance(torch_dtype_value, str) else torch_dtype_value
+    device = device_override or model_params.get("device", "cpu")
+
+    model_configs = _parse_wan_model_configs(
+        model_paths=model_paths,
+        model_id_with_origin_paths=model_id_with_origin_paths,
+        fp8_models=fp8_models,
+        offload_models=offload_models,
+        device=device,
+    )
+    local_tokenizer_path = tokenizer_path or resolve_local_wan_tokenizer_path(model_paths)
+    if local_tokenizer_path is not None:
+        tokenizer_config = ModelConfig(path=local_tokenizer_path)
+        print(f"[Tokenizer] Using local tokenizer path: {local_tokenizer_path}")
+    else:
+        tokenizer_config = ModelConfig(
+            model_id="Wan-AI/Wan2.1-T2V-1.3B",
+            origin_file_pattern="google/umt5-xxl/",
+        )
+    helper = DiffusionTrainingModule()
+    audio_processor_config = helper.parse_path_or_model_id(audio_processor_path)
+    return WanVideoPipeline.from_pretrained(
+        torch_dtype=torch_dtype,
+        device=device,
+        model_configs=model_configs,
+        tokenizer_config=tokenizer_config,
+        audio_processor_config=audio_processor_config,
+    )
+
+
+class WanTrainingModule(DiffusionTrainingModule):
+    def __init__(
+        self,
+        pipe: WanVideoPipeline,
+        trainable_models=None,
+        lora_base_model=None,
+        lora_target_modules="",
+        lora_rank=32,
+        lora_checkpoint=None,
+        preset_lora_path=None,
+        preset_lora_model=None,
+        use_gradient_checkpointing=True,
+        use_gradient_checkpointing_offload=False,
+        extra_inputs=None,
+        fp8_models=None,
+        task="sft",
+        max_timestep_boundary=1.0,
+        min_timestep_boundary=0.0,
+    ):
+        super().__init__()
+        self.pipe = pipe
+        self.pipe = self.split_pipeline_units(task, self.pipe, trainable_models, lora_base_model)
+        self.switch_pipe_to_training_mode(
+            self.pipe,
+            trainable_models,
+            lora_base_model,
+            lora_target_modules,
+            lora_rank,
+            lora_checkpoint,
+            preset_lora_path,
+            preset_lora_model,
+            task=task,
+        )
+        self.use_gradient_checkpointing = use_gradient_checkpointing
+        self.use_gradient_checkpointing_offload = use_gradient_checkpointing_offload
+        self.extra_inputs = extra_inputs.split(",") if extra_inputs is not None else []
+        self.fp8_models = fp8_models
+        self.task = task
+        self.task_to_loss = {
+            "sft:data_process": lambda pipe, *args: args,
+            "direct_distill:data_process": lambda pipe, *args: args,
+            "sft": lambda pipe, inputs_shared, inputs_posi, inputs_nega: FlowMatchSFTLoss(pipe, **inputs_shared, **inputs_posi),
+            "sft:train": lambda pipe, inputs_shared, inputs_posi, inputs_nega: FlowMatchSFTLoss(pipe, **inputs_shared, **inputs_posi),
+            "direct_distill": lambda pipe, inputs_shared, inputs_posi, inputs_nega: DirectDistillLoss(pipe, **inputs_shared, **inputs_posi),
+            "direct_distill:train": lambda pipe, inputs_shared, inputs_posi, inputs_nega: DirectDistillLoss(pipe, **inputs_shared, **inputs_posi),
+        }
+        self.max_timestep_boundary = max_timestep_boundary
+        self.min_timestep_boundary = min_timestep_boundary
+
+    def parse_extra_inputs(self, data, extra_inputs, inputs_shared):
+        for extra_input in extra_inputs:
+            if extra_input == "input_image":
+                inputs_shared["input_image"] = data["video"][0]
+            else:
+                raise ValueError(
+                    f"Unsupported extra input '{extra_input}' in Wan 1.3B I2V training. "
+                    "Only 'input_image' is supported."
+                )
+        return inputs_shared
+
+    def get_pipeline_inputs(self, data):
+        inputs_posi = {"prompt": data["prompt"]}
+        inputs_nega = {}
+        inputs_shared = {
+            "input_video": data["video"],
+            "height": data["video"][0].size[1],
+            "width": data["video"][0].size[0],
+            "num_frames": len(data["video"]),
+            "cfg_scale": 1,
+            "tiled": False,
+            "rand_device": self.pipe.device,
+            "use_gradient_checkpointing": self.use_gradient_checkpointing,
+            "use_gradient_checkpointing_offload": self.use_gradient_checkpointing_offload,
+            "cfg_merge": False,
+            "max_timestep_boundary": self.max_timestep_boundary,
+            "min_timestep_boundary": self.min_timestep_boundary,
+        }
+        inputs_shared = self.parse_extra_inputs(data, self.extra_inputs, inputs_shared)
+        return inputs_shared, inputs_posi, inputs_nega
+
+    def forward(self, data, inputs=None):
+        if inputs is None:
+            inputs = self.get_pipeline_inputs(data)
+        inputs = self.transfer_data_to_device(inputs, self.pipe.device, self.pipe.torch_dtype)
+        for unit in self.pipe.units:
+            inputs = self.pipe.unit_runner(unit, self.pipe, *inputs)
+        loss = self.task_to_loss[self.task](self.pipe, *inputs)
+        return loss
 
 
 def _as_bool(value):
@@ -97,7 +245,7 @@ def _coerce_runtime_types(runtime: dict):
     float_keys = {"learning_rate", "weight_decay", "fps", "max_timestep_boundary", "min_timestep_boundary"}
     bool_keys = {
         "find_unused_parameters", "use_gradient_checkpointing", "use_gradient_checkpointing_offload",
-        "context_window_tail_align", "initialize_model_on_cpu", "framewise_decoding", "wandb_enabled",
+        "context_window_tail_align", "initialize_model_on_cpu", "wandb_enabled",
     }
 
     for key in int_keys:
@@ -342,8 +490,8 @@ def execute_wan_task(args):
             height_division_factor=16,
             width_division_factor=16,
             num_frames=args.num_frames,
-            time_division_factor=4 if not args.framewise_decoding else 1,
-            time_division_remainder=1 if not args.framewise_decoding else 0,
+            time_division_factor=4,
+            time_division_remainder=1,
             frame_rate=target_fps,
             fix_frame_rate=fix_frame_rate,
             frame_processor=frame_processor,
@@ -358,14 +506,21 @@ def execute_wan_task(args):
                 frame_rate=target_fps, fix_frame_rate=fix_frame_rate,
             ),
             "input_audio": ToAbsolutePath(args.dataset_base_path) >> LoadAudio(sr=16000),
-            "wantodance_music_path": ToAbsolutePath(args.dataset_base_path),
         }
     )
+    model_params = {
+        "model_paths": args.model_paths,
+        "model_id_with_origin_paths": args.model_id_with_origin_paths,
+        "tokenizer_path": args.tokenizer_path,
+        "audio_processor_path": args.audio_processor_path,
+        "fp8_models": args.fp8_models,
+        "offload_models": args.offload_models,
+        "device": "cpu" if args.initialize_model_on_cpu else accelerator.device,
+        "torch_dtype": "bfloat16",
+    }
+    pipe = build_wan_i2v_pipeline_from_params(model_params, device_override=model_params["device"])
     model = WanTrainingModule(
-        model_paths=args.model_paths,
-        model_id_with_origin_paths=args.model_id_with_origin_paths,
-        tokenizer_path=args.tokenizer_path,
-        audio_processor_path=args.audio_processor_path,
+        pipe=pipe,
         trainable_models=args.trainable_models,
         lora_base_model=args.lora_base_model,
         lora_target_modules=args.lora_target_modules,
@@ -377,9 +532,7 @@ def execute_wan_task(args):
         use_gradient_checkpointing_offload=args.use_gradient_checkpointing_offload,
         extra_inputs=args.extra_inputs,
         fp8_models=args.fp8_models,
-        offload_models=args.offload_models,
         task=args.task,
-        device="cpu" if args.initialize_model_on_cpu else accelerator.device,
         max_timestep_boundary=args.max_timestep_boundary,
         min_timestep_boundary=args.min_timestep_boundary,
     )
@@ -424,8 +577,9 @@ class WanInferRunner:
 
     def run(self):
         full_config = self.config.full_config
-        model, _ = instantiate_component_from_section(full_config.model, full_config, section_name="model")
         dataset, _ = instantiate_component_from_section(full_config.dataset, full_config, section_name="dataset")
+        model_params = full_config.model.params.to_dict() if hasattr(full_config.model.params, "to_dict") else dict(full_config.model.params)
+        model = build_wan_i2v_pipeline_from_params(model_params)
 
         output_dir = getattr(self.config, "output_dir", "./outputs/libero_infer")
         os.makedirs(output_dir, exist_ok=True)

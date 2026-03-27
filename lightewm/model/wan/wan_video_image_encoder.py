@@ -876,3 +876,12 @@ class WanImageEncoder(torch.nn.Module):
         # forward
         out = self.model.visual(videos, use_31_block=True)
         return out
+
+
+def WanImageEncoderStateDictConverter(state_dict):
+    state_dict_ = {}
+    for name in state_dict:
+        if name.startswith("textual."):
+            continue
+        state_dict_["model." + name] = state_dict[name]
+    return state_dict_

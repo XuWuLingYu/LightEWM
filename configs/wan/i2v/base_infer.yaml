@@ -17,7 +17,7 @@ runner:
       tiled: true
 
 model:
-  class_path: lightewm.model.wan.infer_module.WanI2VInferModel
+  class_path: lightewm.model.wan.pipeline.WanVideoPipeline
   params:
     device: cuda
     torch_dtype: bfloat16
