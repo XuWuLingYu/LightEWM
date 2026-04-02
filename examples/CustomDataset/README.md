@@ -1,6 +1,7 @@
 # CustomDataset Example
 
 This example shows the expected dataset format and the standard three-stage workflow:
+- optional dense-prompt generation
 - latent-cache preprocessing
 - full training
 - batch inference
@@ -33,48 +34,128 @@ videos/000002.mp4,"open the drawer and place the object inside",97
 
 `num_frames` is recommended because cache preprocessing can reuse it directly instead of recounting frames from disk.
 
-## 2) Build latent cache
+## 2) Optional: generate dense prompts
+
+If your `metadata.csv` already exists and you want denser action descriptions before cache generation, run:
 
 ```bash
-bash examples/CustomDataset/process_cache.sh
+bash scripts/process_dense_prompt.sh \
+  --metadata-path data/your_dataset/metadata.csv \
+  --output-path data/your_dataset/metadata_dense_prompt.csv
 ```
 
-You can override paths or preprocessing options:
+This creates:
+- `data/your_dataset/metadata_dense_prompt.csv`
+
+The generated file is ready for downstream use:
+- original sparse text is preserved in `sparse_prompt`
+- generated dense text is written to both `dense_prompt` and `prompt`
+
+If you use dense prompts, update the metadata path in later steps from:
+- `data/your_dataset/metadata.csv`
+
+to:
+- `data/your_dataset/metadata_dense_prompt.csv`
+
+## 3) Build latent cache
 
 ```bash
-accelerate launch run.py \
+bash scripts/process_cache.sh \
   --config examples/CustomDataset/cache.yaml \
-  --overrides \
-    dataset.params.dataset_base_path=data/your_dataset \
-    dataset.params.dataset_metadata_path=data/your_dataset/metadata.csv \
-    runner.params.output_path=./data/your_dataset/latent_cache \
-    runner.params.fps=12 \
-    runner.params.resize_mode=stretch \
-    runner.params.context_window_stride=40
+  --dataset-base-path data/your_dataset \
+  --metadata-path data/your_dataset/metadata.csv \
+  --output-path data/your_dataset/latent_cache
 ```
 
-## 3) Train
+If you generated dense prompts, switch only the metadata path:
 
 ```bash
-bash examples/CustomDataset/train_full.sh
+bash scripts/process_cache.sh \
+  --config examples/CustomDataset/cache.yaml \
+  --dataset-base-path data/your_dataset \
+  --metadata-path data/your_dataset/metadata_dense_prompt.csv \
+  --output-path data/your_dataset/latent_cache
+```
+
+Extra preprocessing overrides can be passed with repeated `--override`, for example:
+
+```bash
+bash scripts/process_cache.sh \
+  --config examples/CustomDataset/cache.yaml \
+  --dataset-base-path data/your_dataset \
+  --metadata-path data/your_dataset/metadata.csv \
+  --output-path data/your_dataset/latent_cache \
+  --override runner.params.fps=12 \
+  --override runner.params.resize_mode=stretch \
+  --override runner.params.context_window_stride=40
+```
+
+## 4) Train
+
+```bash
+bash scripts/train_full.sh \
+  --config examples/CustomDataset/train_full.yaml \
+  --dataset-base-path data/your_dataset/latent_cache
 ```
 
 Useful overrides:
 
 ```bash
-accelerate launch run.py \
+bash scripts/train_full.sh \
   --config examples/CustomDataset/train_full.yaml \
-  --overrides runner.params.num_epochs=5 runner.params.learning_rate=5e-6
+  --dataset-base-path data/your_dataset/latent_cache \
+  --override runner.params.num_epochs=5 \
+  --override runner.params.learning_rate=5e-6
 ```
 
-## 4) Infer
+## 5) Infer
 
 ```bash
-bash examples/CustomDataset/infer.sh
+bash scripts/infer.sh \
+  --config examples/CustomDataset/infer.yaml \
+  --dataset-base-path data/your_dataset \
+  --metadata-path data/your_dataset/metadata.csv
 ```
 
 Optional checkpoint override:
 
 ```bash
-bash examples/CustomDataset/infer.sh --ckpt /path/to/your/ckpt.safetensors
+bash scripts/infer.sh \
+  --config examples/CustomDataset/infer.yaml \
+  --dataset-base-path data/your_dataset \
+  --metadata-path data/your_dataset/metadata.csv \
+  --ckpt /path/to/your/ckpt.safetensors
 ```
+
+If you generated dense prompts, switch only the metadata path:
+
+```bash
+bash scripts/infer.sh \
+  --config examples/CustomDataset/infer.yaml \
+  --dataset-base-path data/your_dataset \
+  --metadata-path data/your_dataset/metadata_dense_prompt.csv
+```
+
+## 6) YAML keys to modify
+
+If you prefer editing the example YAML files directly instead of using script overrides, these are the path-related keys to update:
+
+`examples/CustomDataset/cache.yaml`
+- `dataset.params.dataset_base_path`
+- `dataset.params.dataset_metadata_path`
+- `runner.params.output_path`
+
+`examples/CustomDataset/train_full.yaml`
+- `dataset.params.dataset_base_path`
+
+`examples/CustomDataset/infer.yaml`
+- `dataset.params.base_path`
+- `dataset.params.metadata_path`
+
+You will likely also want to review these non-path keys:
+- `runner.params.height`
+- `runner.params.width`
+- `runner.params.fps`
+- `runner.params.infer_kwargs.height`
+- `runner.params.infer_kwargs.width`
+- `runner.params.wandb_run_name`

@@ -10,16 +10,31 @@ runner:
     trainable_models: dit
     extra_inputs: input_image
     learning_rate: 1.0e-5
-    batch_size: 8
+    batch_size: 1
     num_epochs: 999
-    save_steps: 500
+    save_steps: 5000
     remove_prefix_in_ckpt: pipe.dit.
-    use_gradient_checkpointing: true
+    use_gradient_checkpointing: false
     wandb_enabled: true
     wandb_project: LightEWM
     wandb_run_name: Wan1.3B-I2V-Libero
     wandb_mode: online
     wandb_log_every: 5
+    validation_every_steps: 2000
+    validation_extra_steps: [10]
+    validation_num_samples: 3
+    validation_fps: 10
+    validation_quality: 5
+    validation_seed_base: 0
+    validation_input_image_resize_mode: letterbox
+    validation_infer_kwargs:
+      negative_prompt: ""
+      height: 480
+      width: 832
+      num_frames: 49
+      cfg_scale: 1.0
+      num_inference_steps: 50
+      tiled: true
     task: sft:train
 
 model:
@@ -41,4 +56,14 @@ dataset:
 
 runtime:
   params:
-    gradient_accumulation_steps: 1
+    gradient_accumulation_steps: 8
+
+validation_dataset:
+  class_path: lightewm.dataset.libero_infer.LiberoInferenceDataset
+  params:
+    base_path: data/libero_i2v_train
+    metadata_path: data/libero_i2v_train/metadata_dense_prompt.csv
+    video_key: video
+    prompt_key: prompt
+    demo_id_key: demo_id
+    camera_key_col: camera_key

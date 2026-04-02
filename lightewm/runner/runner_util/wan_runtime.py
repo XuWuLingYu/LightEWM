@@ -9,7 +9,7 @@ from lightewm.dataset.operators import ImageCropAndResize, LoadAudio, LoadVideo,
 from lightewm.model.wan.pipeline import WanVideoPipeline
 from lightewm.utils.loader import ModelConfig
 
-from .instantiation import flatten_config_params, resolve_local_wan_tokenizer_path
+from .instantiation import flatten_config_params, import_class, resolve_local_wan_tokenizer_path
 
 
 WAN_I2V_DEFAULTS = {
@@ -26,6 +26,7 @@ WAN_I2V_DEFAULTS = {
     "learning_rate": 1e-4,
     "num_epochs": 1,
     "batch_size": 1,
+    "data_seed": 42,
     "trainable_models": None,
     "find_unused_parameters": False,
     "weight_decay": 0.01,
@@ -62,6 +63,14 @@ WAN_I2V_DEFAULTS = {
     "wandb_run_name": None,
     "wandb_mode": "online",
     "wandb_log_every": 10,
+    "validation_every_steps": 1000,
+    "validation_extra_steps": [],
+    "validation_num_samples": 3,
+    "validation_fps": 16,
+    "validation_quality": 5,
+    "validation_seed_base": 0,
+    "validation_input_image_resize_mode": "stretch",
+    "validation_infer_kwargs": {},
 }
 
 
@@ -79,6 +88,7 @@ def _coerce_runtime_types(runtime: dict):
         "dataset_num_workers",
         "num_epochs",
         "batch_size",
+        "data_seed",
         "save_steps",
         "lora_rank",
         "gradient_accumulation_steps",
@@ -89,6 +99,11 @@ def _coerce_runtime_types(runtime: dict):
         "context_window_stride",
         "context_window_wait_timeout",
         "wandb_log_every",
+        "validation_every_steps",
+        "validation_num_samples",
+        "validation_fps",
+        "validation_quality",
+        "validation_seed_base",
     }
     float_keys = {
         "learning_rate",
@@ -231,9 +246,14 @@ def build_wan_i2v_pipeline_from_params(model_params: dict, device_override=None)
     offload_models = model_params.get("offload_models")
     tokenizer_path = model_params.get("tokenizer_path")
     audio_processor_path = model_params.get("audio_processor_path")
+    pipeline_class_path = model_params.get(
+        "pipeline_class_path",
+        "lightewm.model.wan.pipeline.WanVideoPipeline",
+    )
     torch_dtype_value = model_params.get("torch_dtype", "bfloat16")
     torch_dtype = getattr(torch, torch_dtype_value) if isinstance(torch_dtype_value, str) else torch_dtype_value
     device = device_override or model_params.get("device", "cpu")
+    pipeline_cls = import_class(pipeline_class_path) if pipeline_class_path else WanVideoPipeline
 
     model_configs = parse_model_configs(
         model_paths=model_paths,
@@ -252,7 +272,7 @@ def build_wan_i2v_pipeline_from_params(model_params: dict, device_override=None)
             origin_file_pattern="google/umt5-xxl/",
         )
     audio_processor_config = parse_path_or_model_id(audio_processor_path)
-    return WanVideoPipeline.from_pretrained(
+    return pipeline_cls.from_pretrained(
         torch_dtype=torch_dtype,
         device=device,
         model_configs=model_configs,

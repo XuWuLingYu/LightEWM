@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import argparse
 import csv
+from concurrent.futures import ProcessPoolExecutor, as_completed
 import re
 import sys
 from pathlib import Path
@@ -106,7 +107,21 @@ def parse_args() -> argparse.Namespace:
         "--fps",
         type=int,
         default=16,
-        help="FPS used when writing output videos.",
+        help="Target FPS used when writing output videos.",
+    )
+    parser.add_argument(
+        "--source-fps",
+        type=float,
+        default=None,
+        help="Optional source FPS used for temporal resampling before writing videos. "
+             "For example, --source-fps 16 --fps 10 resamples 16 FPS trajectories to 10 FPS.",
+    )
+    parser.add_argument(
+        "--frame-downsample",
+        type=int,
+        default=1,
+        help="Integer temporal downsample factor applied before writing videos when --source-fps is not used. "
+             "For example, 4 keeps every 4th frame.",
     )
     parser.add_argument(
         "--max-demos-per-file",
@@ -125,6 +140,12 @@ def parse_args() -> argparse.Namespace:
         "--overwrite",
         action="store_true",
         help="Overwrite existing output videos.",
+    )
+    parser.add_argument(
+        "--workers",
+        type=int,
+        default=1,
+        help="Number of parallel workers for hdf5->mp4 export. Uses process-based parallelism for h5py safety.",
     )
     parser.add_argument(
         "--rotate-180",
@@ -290,8 +311,115 @@ def write_video_mp4(path: Path, frames, fps: int):
     iio.imwrite(path, frames, fps=fps)
 
 
+def temporal_downsample_frames(frames, factor: int):
+    if factor <= 1:
+        return frames
+    return frames[::factor]
+
+
+def temporal_resample_frames(frames, source_fps: float | None, target_fps: float):
+    if source_fps is None or source_fps <= 0 or target_fps <= 0:
+        return frames
+    if target_fps >= source_fps:
+        return frames
+
+    import numpy as np
+
+    step = float(source_fps) / float(target_fps)
+    indices = np.floor(np.arange(0, len(frames), step)).astype(int)
+    indices = np.clip(indices, 0, len(frames) - 1)
+    indices = np.unique(indices)
+    return frames[indices]
+
+
+def process_h5_job(
+    suite: str,
+    h5_path_str: str,
+    requested_camera_keys: list[str],
+    prompt_source: str,
+    max_demos_per_file: int | None,
+    output_dir_str: str,
+    overwrite: bool,
+    fps: int,
+    source_fps: float | None,
+    frame_downsample: int,
+    rotate_180: bool,
+):
+    import h5py
+
+    h5_path = Path(h5_path_str)
+    output_dir = Path(output_dir_str)
+    rows = []
+    exported = 0
+
+    with h5py.File(h5_path, "r") as f:
+        if "data" not in f:
+            return {
+                "rows": [],
+                "exported": 0,
+                "warnings": [f"Skip file without /data group: {h5_path}"],
+            }
+
+        demo_keys = sorted(list(f["data"].keys()))
+        if max_demos_per_file is not None:
+            demo_keys = demo_keys[:max_demos_per_file]
+
+        stem = h5_path.stem
+        for demo_id in demo_keys:
+            demo = f["data"][demo_id]
+            if "obs" not in demo:
+                continue
+            obs = demo["obs"]
+            try:
+                camera_keys = pick_camera_keys(obs, requested_camera_keys)
+            except Exception:
+                continue
+
+            if prompt_source == "filename_only":
+                prompt = prompt_from_filename(stem)
+            else:
+                prompt = prompt_from_attrs_or_filename(stem, f.attrs, demo.attrs)
+
+            for camera_key in camera_keys:
+                frames = to_uint8_frames(obs[camera_key][...])
+                frames = temporal_resample_frames(frames, source_fps, fps)
+                frames = temporal_downsample_frames(frames, frame_downsample)
+                frames = apply_orientation_fix(frames, rotate_180=rotate_180)
+                if len(frames) == 0:
+                    continue
+
+                view_name = sanitize_view_name(camera_key)
+                video_name = f"{suite}__{stem}__{demo_id}__{view_name}.mp4"
+                rel_video_path = Path("videos") / video_name
+                out_video = output_dir / rel_video_path
+
+                if not out_video.exists() or overwrite:
+                    out_video.parent.mkdir(parents=True, exist_ok=True)
+                    write_video_mp4(out_video, frames, fps=fps)
+
+                rows.append(
+                    {
+                        "video": rel_video_path.as_posix(),
+                        "prompt": prompt,
+                        "source_file": h5_path.as_posix(),
+                        "demo_id": demo_id,
+                        "camera_key": camera_key,
+                        "num_frames": len(frames),
+                    }
+                )
+                exported += 1
+
+    return {"rows": rows, "exported": exported, "warnings": []}
+
+
 def main():
     args = parse_args()
+    if args.frame_downsample <= 0:
+        raise ValueError("--frame-downsample must be a positive integer.")
+    if args.source_fps is not None and args.source_fps <= 0:
+        raise ValueError("--source-fps must be positive when provided.")
+    if args.source_fps is not None and args.frame_downsample != 1:
+        raise ValueError("Use either --source-fps based resampling or --frame-downsample, not both.")
     ensure_dependencies()
     import h5py
 
@@ -307,6 +435,7 @@ def main():
     num_files = 0
     num_demos = 0
     num_errors = 0
+    num_workers = max(1, int(args.workers))
 
     jobs = []
     for suite in suite_names:
@@ -318,68 +447,67 @@ def main():
             jobs.append((suite, h5_path))
 
     with tqdm(total=len(jobs), desc="LIBERO files", unit="file") as file_pbar:
-        for suite, h5_path in jobs:
-            num_files += 1
-            stem = h5_path.stem
-            try:
-                with h5py.File(h5_path, "r") as f:
-                    if "data" not in f:
-                        print(f"[WARN] Skip file without /data group: {h5_path}")
-                        continue
-                    demo_keys = sorted(list(f["data"].keys()))
-                    if args.max_demos_per_file is not None:
-                        demo_keys = demo_keys[: args.max_demos_per_file]
-                    demo_desc = f"{suite}:{stem[:36]}"
-                    for demo_id in tqdm(demo_keys, desc=demo_desc, unit="demo", leave=False):
-                        demo = f["data"][demo_id]
-                        if "obs" not in demo:
-                            print(f"[WARN] Skip demo without /obs: {h5_path}:{demo_id}")
-                            continue
-                        obs = demo["obs"]
-                        try:
-                            camera_keys = pick_camera_keys(obs, requested_camera_keys)
-                        except Exception as e:
-                            print(f"[WARN] Skip demo without usable camera: {h5_path}:{demo_id} ({e})")
-                            continue
-
-                        if args.prompt_source == "filename_only":
-                            prompt = prompt_from_filename(stem)
-                        else:
-                            prompt = prompt_from_attrs_or_filename(stem, f.attrs, demo.attrs)
-
-                        for camera_key in camera_keys:
-                            frames = to_uint8_frames(obs[camera_key][...])
-                            frames = apply_orientation_fix(frames, rotate_180=args.rotate_180)
-                            if len(frames) == 0:
-                                print(f"[WARN] Empty frames: {h5_path}:{demo_id}:{camera_key}")
-                                continue
-
-                            view_name = sanitize_view_name(camera_key)
-                            video_name = f"{suite}__{stem}__{demo_id}__{view_name}.mp4"
-                            rel_video_path = Path("videos") / video_name
-                            out_video = output_dir / rel_video_path
-
-                            if out_video.exists() and not args.overwrite:
-                                pass
-                            else:
-                                out_video.parent.mkdir(parents=True, exist_ok=True)
-                                write_video_mp4(out_video, frames, fps=args.fps)
-
-                            rows.append({
-                                "video": rel_video_path.as_posix(),
-                                "prompt": prompt,
-                                "source_file": h5_path.as_posix(),
-                                "demo_id": demo_id,
-                                "camera_key": camera_key,
-                                "num_frames": len(frames),
-                            })
-                            num_demos += 1
-            except Exception as e:
-                num_errors += 1
-                print(f"[ERROR] Failed file: {h5_path} ({e})")
-            finally:
-                file_pbar.update(1)
-                file_pbar.set_postfix(exported=num_demos, errors=num_errors)
+        if num_workers == 1:
+            for suite, h5_path in jobs:
+                num_files += 1
+                try:
+                    result = process_h5_job(
+                        suite=suite,
+                        h5_path_str=str(h5_path),
+                        requested_camera_keys=requested_camera_keys,
+                        prompt_source=args.prompt_source,
+                        max_demos_per_file=args.max_demos_per_file,
+                        output_dir_str=str(output_dir),
+                        overwrite=args.overwrite,
+                        fps=args.fps,
+                        source_fps=args.source_fps,
+                        frame_downsample=args.frame_downsample,
+                        rotate_180=args.rotate_180,
+                    )
+                    rows.extend(result["rows"])
+                    num_demos += result["exported"]
+                    for warning in result["warnings"]:
+                        print(f"[WARN] {warning}")
+                except Exception as e:
+                    num_errors += 1
+                    print(f"[ERROR] Failed file: {h5_path} ({e})")
+                finally:
+                    file_pbar.update(1)
+                    file_pbar.set_postfix(exported=num_demos, errors=num_errors, workers=num_workers)
+        else:
+            with ProcessPoolExecutor(max_workers=num_workers) as executor:
+                future_to_job = {
+                    executor.submit(
+                        process_h5_job,
+                        suite,
+                        str(h5_path),
+                        requested_camera_keys,
+                        args.prompt_source,
+                        args.max_demos_per_file,
+                        str(output_dir),
+                        args.overwrite,
+                        args.fps,
+                        args.source_fps,
+                        args.frame_downsample,
+                        args.rotate_180,
+                    ): (suite, h5_path)
+                    for suite, h5_path in jobs
+                }
+                num_files = len(future_to_job)
+                for future in as_completed(future_to_job):
+                    suite, h5_path = future_to_job[future]
+                    try:
+                        result = future.result()
+                        rows.extend(result["rows"])
+                        num_demos += result["exported"]
+                        for warning in result["warnings"]:
+                            print(f"[WARN] {warning}")
+                    except Exception as e:
+                        num_errors += 1
+                        print(f"[ERROR] Failed file: {h5_path} ({e})")
+                    finally:
+                        file_pbar.update(1)
+                        file_pbar.set_postfix(exported=num_demos, errors=num_errors, workers=num_workers)
 
     metadata_path = output_dir / "metadata.csv"
     with metadata_path.open("w", newline="", encoding="utf-8") as f:

@@ -35,6 +35,15 @@ hf download alibaba-pai/Wan2.1-Fun-1.3B-InP \
   --local-dir ./checkpoints/Wan2.1-I2V-1.3B
 ```
 
+### 3) Download Wan2.2-TI2V-5B checkpoint
+
+```bash
+hf download Wan-AI/Wan2.2-TI2V-5B \
+  --local-dir ./checkpoints/Wan2.2-TI2V-5B
+```
+
+This downloads the full Hugging Face repository to `./checkpoints/Wan2.2-TI2V-5B`, which matches the default path used by the TI2V-5B example configs under `examples/LIBERO/`.
+
 ## 🚀 Quick Start on LIBERO
 
 See [LIBERO example](examples/LIBERO/README.md).

@@ -316,7 +316,7 @@ class WanVideoUnit_PromptEmbedder(PipelineUnit):
         seq_lens = mask.gt(0).sum(dim=1).long()
         prompt_emb = pipe.text_encoder(ids, mask)
         for i, v in enumerate(seq_lens):
-            prompt_emb[:, v:] = 0
+            prompt_emb[i, v:] = 0
         return prompt_emb
 
     def process(self, pipe: WanVideoPipeline, prompt, positive) -> dict:

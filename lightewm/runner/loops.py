@@ -28,19 +28,45 @@ def _validate_cached_sample(sample, expected_latent_frames: int = 21):
     if not (isinstance(sample, (tuple, list)) and len(sample) == 3 and all(isinstance(x, dict) for x in sample)):
         return False, "cache tuple format is invalid"
     shared = sample[0]
+    sample_num_frames = shared.get("num_frames")
+    if sample_num_frames is not None:
+        try:
+            sample_num_frames = int(sample_num_frames)
+            if sample_num_frames > 0:
+                expected_latent_frames = (sample_num_frames - 1) // 4 + 1
+        except Exception:
+            pass
     input_latents = shared.get("input_latents")
     y = shared.get("y")
+    first_frame_latents = shared.get("first_frame_latents")
     if not isinstance(input_latents, torch.Tensor):
         return False, f"input_latents is {type(input_latents).__name__}"
-    if not isinstance(y, torch.Tensor):
-        return False, f"y is {type(y).__name__}"
-    if input_latents.ndim != 5 or y.ndim != 5:
-        return False, f"ndim mismatch input_latents={input_latents.ndim}, y={y.ndim}"
-    if input_latents.shape[2] != expected_latent_frames or y.shape[2] != expected_latent_frames:
-        return False, f"time mismatch input_latents={input_latents.shape[2]}, y={y.shape[2]}, expected={expected_latent_frames}"
-    for dim in (0, 2, 3, 4):
-        if input_latents.shape[dim] != y.shape[dim]:
-            return False, f"shape mismatch at dim={dim}: input_latents={tuple(input_latents.shape)}, y={tuple(y.shape)}"
+    if input_latents.ndim != 5:
+        return False, f"input_latents ndim is {input_latents.ndim}"
+    if input_latents.shape[2] != expected_latent_frames:
+        return False, f"time mismatch input_latents={input_latents.shape[2]}, expected={expected_latent_frames}"
+    if isinstance(y, torch.Tensor):
+        if y.ndim != 5:
+            return False, f"y ndim is {y.ndim}"
+        if y.shape[2] != expected_latent_frames:
+            return False, f"time mismatch y={y.shape[2]}, expected={expected_latent_frames}"
+        for dim in (0, 2, 3, 4):
+            if input_latents.shape[dim] != y.shape[dim]:
+                return False, f"shape mismatch at dim={dim}: input_latents={tuple(input_latents.shape)}, y={tuple(y.shape)}"
+    elif isinstance(first_frame_latents, torch.Tensor):
+        if first_frame_latents.ndim != 5:
+            return False, f"first_frame_latents ndim is {first_frame_latents.ndim}"
+        if first_frame_latents.shape[2] != 1:
+            return False, f"first_frame_latents time dim is {first_frame_latents.shape[2]}, expected=1"
+        for dim in (0, 1, 3, 4):
+            if input_latents.shape[dim] != first_frame_latents.shape[dim]:
+                return (
+                    False,
+                    "shape mismatch between input_latents and first_frame_latents: "
+                    f"{tuple(input_latents.shape)} vs {tuple(first_frame_latents.shape)}",
+                )
+    else:
+        return False, "cache sample misses both y and first_frame_latents"
     return True, ""
 
 
@@ -49,6 +75,7 @@ def launch_training_task(
     dataset: torch.utils.data.Dataset,
     model: torch.nn.Module,
     model_logger: ModelLogger,
+    validator = None,
     learning_rate: float = 1e-5,
     weight_decay: float = 1e-2,
     num_workers: int = 1,
@@ -106,6 +133,9 @@ def launch_training_task(
                     loss_value = gathered_loss.mean().item()
                     lr = optimizer.param_groups[0]["lr"]
                     wandb_run.log({"train/loss": loss_value, "train/lr": lr, "train/epoch": epoch_id}, step=global_step)
+                if validator is not None:
+                    validator.wandb_run = wandb_run
+                    validator.maybe_run(accelerator, model, global_step)
         if save_steps is None:
             model_logger.on_epoch_end(accelerator, model, epoch_id)
             if wandb_run is not None:
@@ -125,7 +155,11 @@ def launch_data_process_task(
 ):
     if args is not None:
         num_workers = args.dataset_num_workers
-    expected_latent_frames = int(getattr(args, "expected_latent_frames", 21)) if args is not None else 21
+    configured_num_frames = int(getattr(args, "num_frames", 0)) if args is not None else 0
+    if configured_num_frames > 0:
+        expected_latent_frames = (configured_num_frames - 1) // 4 + 1
+    else:
+        expected_latent_frames = int(getattr(args, "expected_latent_frames", 21)) if args is not None else 21
         
     dataloader = torch.utils.data.DataLoader(dataset, shuffle=False, collate_fn=lambda x: x[0], num_workers=num_workers)
     model.to(device=accelerator.device)
@@ -156,7 +190,9 @@ def launch_data_process_task(
         total_skipped = int(all_stats[:, 1].sum().item())
         print(
             f"[DataProcess] Completed cache generation. "
-            f"Saved={total_saved}, SkippedInvalid={total_skipped}, ExpectedLatentFrames={expected_latent_frames}"
+            f"Saved={total_saved}, SkippedInvalid={total_skipped}, "
+            f"ConfigNumFrames={configured_num_frames if configured_num_frames > 0 else 'unknown'}, "
+            f"ExpectedLatentFrames={expected_latent_frames}"
         )
 
 

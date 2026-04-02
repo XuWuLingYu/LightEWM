@@ -1,5 +1,5 @@
 import inspect
-import warnings
+import os
 
 import accelerate
 import torch
@@ -8,6 +8,7 @@ from peft import LoraConfig, inject_adapter_in_model
 from lightewm.model.loss import DirectDistillLoss, FlowMatchSFTLoss
 from lightewm.runner.loops import launch_training_task
 from lightewm.runner.base_pipeline import PipelineUnit
+from lightewm.runner.runner_util.instantiation import instantiate_component_from_section
 from lightewm.runner.runner_util.wan_runtime import (
     build_wan_i2v_pipeline_from_params,
     build_wan_i2v_runtime_args,
@@ -16,6 +17,7 @@ from lightewm.runner.runner_util.wan_runtime import (
 from lightewm.utils.loader import load_state_dict
 from lightewm.utils.logger import ModelLogger
 
+from .periodic_validation import PeriodicWanVideoValidator
 
 class GeneralUnit_RemoveCache(PipelineUnit):
     def __init__(
@@ -64,14 +66,8 @@ class WanTrainingModule(torch.nn.Module):
         min_timestep_boundary=0.0,
     ):
         super().__init__()
-        if not use_gradient_checkpointing:
-            warnings.warn(
-                "Gradient checkpointing is detected as disabled. "
-                "To prevent out-of-memory errors, the training framework will forcibly enable gradient checkpointing."
-            )
-            use_gradient_checkpointing = True
-
         self.pipe = pipe
+        self.validation_pipe_units = list(pipe.units)
         self.pipe = self.split_pipeline_units(task, self.pipe, trainable_models, lora_base_model)
         self.switch_pipe_to_training_mode(
             self.pipe,
@@ -287,7 +283,7 @@ class WanTrainingModule(torch.nn.Module):
                 inputs_shared["input_image"] = data["video"][0]
             else:
                 raise ValueError(
-                    f"Unsupported extra input '{extra_input}' in Wan 1.3B I2V training. "
+                    f"Unsupported extra input '{extra_input}' in current Wan training pipeline. "
                     "Only 'input_image' is supported."
                 )
         return inputs_shared
@@ -315,6 +311,11 @@ class WanTrainingModule(torch.nn.Module):
     def forward(self, data, inputs=None):
         if inputs is None:
             inputs = self.get_pipeline_inputs(data)
+        elif isinstance(inputs, (tuple, list)) and len(inputs) == 3 and isinstance(inputs[0], dict):
+            inputs_shared = dict(inputs[0])
+            inputs_shared["use_gradient_checkpointing"] = self.use_gradient_checkpointing
+            inputs_shared["use_gradient_checkpointing_offload"] = self.use_gradient_checkpointing_offload
+            inputs = (inputs_shared, inputs[1], inputs[2])
         inputs = self.transfer_data_to_device(inputs, self.pipe.device, self.pipe.torch_dtype)
         for unit in self.pipe.units:
             inputs = self.pipe.unit_runner(unit, self.pipe, *inputs)
@@ -333,6 +334,10 @@ class WanTrainRunner:
 
         accelerator = accelerate.Accelerator(
             gradient_accumulation_steps=args.gradient_accumulation_steps,
+            dataloader_config=accelerate.DataLoaderConfiguration(
+                use_seedable_sampler=True,
+                data_seed=args.data_seed,
+            ),
             kwargs_handlers=[
                 accelerate.DistributedDataParallelKwargs(
                     find_unused_parameters=args.find_unused_parameters
@@ -342,6 +347,7 @@ class WanTrainRunner:
         dataset = build_wan_training_dataset(args, use_data_process_controls=False)
         pipe = build_wan_i2v_pipeline_from_params(
             {
+                "pipeline_class_path": self.config.full_config.model.class_path,
                 "model_paths": args.model_paths,
                 "model_id_with_origin_paths": args.model_id_with_origin_paths,
                 "tokenizer_path": args.tokenizer_path,
@@ -373,4 +379,24 @@ class WanTrainRunner:
             args.output_path,
             remove_prefix_in_ckpt=args.remove_prefix_in_ckpt,
         )
-        launch_training_task(accelerator, dataset, model, model_logger, args=args)
+        validator = None
+        validation_dataset_section = getattr(self.config.full_config, "validation_dataset", None)
+        if validation_dataset_section is not None:
+            validation_dataset, _ = instantiate_component_from_section(
+                validation_dataset_section,
+                self.config.full_config,
+                section_name="validation_dataset",
+            )
+            validator = PeriodicWanVideoValidator(
+                dataset=validation_dataset,
+                output_root=args.output_path,
+                every_steps=int(getattr(args, "validation_every_steps", 1000)),
+                extra_steps=getattr(args, "validation_extra_steps", []),
+                num_samples=int(getattr(args, "validation_num_samples", 3)),
+                fps=int(getattr(args, "validation_fps", 16)),
+                quality=int(getattr(args, "validation_quality", 5)),
+                seed_base=int(getattr(args, "validation_seed_base", 0)),
+                infer_kwargs=getattr(args, "validation_infer_kwargs", {}),
+                input_image_resize_mode=getattr(args, "validation_input_image_resize_mode", "stretch"),
+            )
+        launch_training_task(accelerator, dataset, model, model_logger, validator=validator, args=args)

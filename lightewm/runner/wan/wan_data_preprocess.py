@@ -216,6 +216,10 @@ class WanCacheRunner:
 
         accelerator = accelerate.Accelerator(
             gradient_accumulation_steps=args.gradient_accumulation_steps,
+            dataloader_config=accelerate.DataLoaderConfiguration(
+                use_seedable_sampler=True,
+                data_seed=args.data_seed,
+            ),
             kwargs_handlers=[
                 accelerate.DistributedDataParallelKwargs(
                     find_unused_parameters=args.find_unused_parameters
@@ -225,6 +229,7 @@ class WanCacheRunner:
         dataset = build_wan_training_dataset(args, use_data_process_controls=True)
         pipe = build_wan_i2v_pipeline_from_params(
             {
+                "pipeline_class_path": self.config.full_config.model.class_path,
                 "model_paths": args.model_paths,
                 "model_id_with_origin_paths": args.model_id_with_origin_paths,
                 "tokenizer_path": args.tokenizer_path,

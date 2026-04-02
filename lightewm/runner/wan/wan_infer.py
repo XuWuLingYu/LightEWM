@@ -25,6 +25,7 @@ class WanInferRunner:
             if hasattr(full_config.model.params, "to_dict")
             else dict(full_config.model.params)
         )
+        model_params["pipeline_class_path"] = full_config.model.class_path
         model = build_wan_i2v_pipeline_from_params(model_params)
 
         output_dir = getattr(self.config, "output_dir", "./outputs/libero_infer")
