@@ -3,26 +3,26 @@ task: train
 runner:
   class_path: lightewm.runner.wan.wan_training.WanTrainRunner
   params:
-    output_path: ./logs/train/Wan1.3B-I2V-Libero
+    output_path: ./logs/train/Wan2.1-I2V-14B-Libero
     height: 480
     width: 832
     dataset_repeat: 100
     trainable_models: dit
     extra_inputs: input_image
-    learning_rate: 1.0e-5
+    learning_rate: 5.0e-5
     batch_size: 1
     num_epochs: 999
     save_steps: 5000
     remove_prefix_in_ckpt: pipe.dit.
-    use_gradient_checkpointing: false
+    use_gradient_checkpointing: true
     wandb_enabled: true
     wandb_project: LightEWM
-    wandb_run_name: Wan1.3B-I2V-Libero
+    wandb_run_name: Wan2.1-I2V-14B-Libero
     wandb_mode: online
     wandb_log_every: 5
     validation_every_steps: 2000
     validation_extra_steps: [10]
-    validation_num_samples: 3
+    validation_num_samples: 1
     validation_fps: 10
     validation_quality: 5
     validation_seed_base: 0
@@ -42,11 +42,18 @@ model:
   params:
     device: cuda
     torch_dtype: bfloat16
+    tokenizer_path: checkpoints/Wan2.1-I2V-14B-480P/google/umt5-xxl
     model_paths:
-      - checkpoints/Wan2.1-I2V-1.3B/diffusion_pytorch_model.safetensors
-      - checkpoints/Wan2.1-I2V-1.3B/models_t5_umt5-xxl-enc-bf16.pth
-      - checkpoints/Wan2.1-I2V-1.3B/Wan2.1_VAE.pth
-      - checkpoints/Wan2.1-I2V-1.3B/models_clip_open-clip-xlm-roberta-large-vit-huge-14.pth
+      - - checkpoints/Wan2.1-I2V-14B-480P/diffusion_pytorch_model-00001-of-00007.safetensors
+        - checkpoints/Wan2.1-I2V-14B-480P/diffusion_pytorch_model-00002-of-00007.safetensors
+        - checkpoints/Wan2.1-I2V-14B-480P/diffusion_pytorch_model-00003-of-00007.safetensors
+        - checkpoints/Wan2.1-I2V-14B-480P/diffusion_pytorch_model-00004-of-00007.safetensors
+        - checkpoints/Wan2.1-I2V-14B-480P/diffusion_pytorch_model-00005-of-00007.safetensors
+        - checkpoints/Wan2.1-I2V-14B-480P/diffusion_pytorch_model-00006-of-00007.safetensors
+        - checkpoints/Wan2.1-I2V-14B-480P/diffusion_pytorch_model-00007-of-00007.safetensors
+      - checkpoints/Wan2.1-I2V-14B-480P/models_t5_umt5-xxl-enc-bf16.pth
+      - checkpoints/Wan2.1-I2V-14B-480P/Wan2.1_VAE.pth
+      - checkpoints/Wan2.1-I2V-14B-480P/models_clip_open-clip-xlm-roberta-large-vit-huge-14.pth
 
 dataset:
   class_path: lightewm.dataset.unified_dataset.UnifiedDataset
@@ -56,7 +63,7 @@ dataset:
 
 runtime:
   params:
-    gradient_accumulation_steps: 8
+    gradient_accumulation_steps: 1
 
 validation_dataset:
   class_path: lightewm.dataset.libero_infer.LiberoInferenceDataset

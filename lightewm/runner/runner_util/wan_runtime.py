@@ -3,11 +3,12 @@ import os
 from types import SimpleNamespace
 
 import torch
+from transformers.integrations import is_deepspeed_zero3_enabled
 
 from lightewm.dataset import UnifiedDataset
 from lightewm.dataset.operators import ImageCropAndResize, LoadAudio, LoadVideo, ToAbsolutePath
 from lightewm.model.wan.pipeline import WanVideoPipeline
-from lightewm.utils.loader import ModelConfig
+from lightewm.utils.loader import ModelConfig, load_state_dict
 
 from .instantiation import flatten_config_params, import_class, resolve_local_wan_tokenizer_path
 
@@ -48,6 +49,7 @@ WAN_I2V_DEFAULTS = {
     "max_pixels": 1024 * 1024,
     "num_frames": 81,
     "fps": None,
+    "video_sampling_mode": "prefix",
     "resize_mode": "stretch",
     "context_window_short_video_mode": "drop",
     "context_window_stride": 81,
@@ -65,12 +67,13 @@ WAN_I2V_DEFAULTS = {
     "wandb_log_every": 10,
     "validation_every_steps": 1000,
     "validation_extra_steps": [],
-    "validation_num_samples": 3,
+    "validation_num_samples": 1,
     "validation_fps": 16,
     "validation_quality": 5,
     "validation_seed_base": 0,
     "validation_input_image_resize_mode": "stretch",
     "validation_infer_kwargs": {},
+    "dit_checkpoint_overlays": None,
 }
 
 
@@ -246,6 +249,7 @@ def build_wan_i2v_pipeline_from_params(model_params: dict, device_override=None)
     offload_models = model_params.get("offload_models")
     tokenizer_path = model_params.get("tokenizer_path")
     audio_processor_path = model_params.get("audio_processor_path")
+    dit_checkpoint_overlays = model_params.get("dit_checkpoint_overlays")
     pipeline_class_path = model_params.get(
         "pipeline_class_path",
         "lightewm.model.wan.pipeline.WanVideoPipeline",
@@ -272,19 +276,86 @@ def build_wan_i2v_pipeline_from_params(model_params: dict, device_override=None)
             origin_file_pattern="google/umt5-xxl/",
         )
     audio_processor_config = parse_path_or_model_id(audio_processor_path)
-    return pipeline_cls.from_pretrained(
+    pipe = pipeline_cls.from_pretrained(
         torch_dtype=torch_dtype,
         device=device,
         model_configs=model_configs,
         tokenizer_config=tokenizer_config,
         audio_processor_config=audio_processor_config,
     )
+    apply_dit_checkpoint_overlays(pipe, dit_checkpoint_overlays, model_paths=model_paths)
+    return pipe
+
+
+def _normalize_optional_path_list(paths):
+    if paths is None:
+        return []
+    if isinstance(paths, str):
+        return [item for item in paths.split(",") if item]
+    return list(paths)
+
+
+def _load_state_dict_into_module(module, state_dict):
+    if is_deepspeed_zero3_enabled():
+        from transformers.integrations.deepspeed import _load_state_dict_into_zero3_model
+
+        _load_state_dict_into_zero3_model(module, state_dict)
+        return None
+    return module.load_state_dict(state_dict, strict=False)
+
+
+def _should_skip_dit_overlay(model_paths):
+    if model_paths is None:
+        return False
+    if isinstance(model_paths, str):
+        try:
+            model_paths = json.loads(model_paths)
+        except Exception:
+            return False
+    if not isinstance(model_paths, list) or len(model_paths) == 0:
+        return False
+
+    # Our WoW base config stores DiT shards as a nested list. When `run.py --ckpt`
+    # overrides the DiT weights, model_paths[0] becomes a single checkpoint path.
+    # In that case the user expects the explicit checkpoint to be used as-is.
+    return isinstance(model_paths[0], str)
+
+
+def apply_dit_checkpoint_overlays(pipe, overlay_paths, model_paths=None):
+    overlay_paths = _normalize_optional_path_list(overlay_paths)
+    if len(overlay_paths) == 0:
+        return
+    if getattr(pipe, "dit", None) is None:
+        raise ValueError("Config requests dit_checkpoint_overlays, but the pipeline has no `dit` model.")
+    if _should_skip_dit_overlay(model_paths):
+        print(
+            "[DiTOverlay] Skip overlay because model_paths[0] is an explicit single-checkpoint DiT load. "
+            "This usually means `--ckpt` was provided, so the checkpoint should not be re-overwritten by overlay weights."
+        )
+        return
+
+    for overlay_path in overlay_paths:
+        print(f"[DiTOverlay] Loading overlay checkpoint: {overlay_path}")
+        state_dict = load_state_dict(overlay_path, torch_dtype=pipe.torch_dtype, device="cpu")
+        load_result = _load_state_dict_into_module(pipe.dit, state_dict)
+        if load_result is None:
+            print("[DiTOverlay] Loaded under DeepSpeed ZeRO-3.")
+            continue
+        missing_keys, unexpected_keys = load_result
+        print(
+            f"[DiTOverlay] Loaded with strict=False. "
+            f"missing_keys={len(missing_keys)}, unexpected_keys={len(unexpected_keys)}"
+        )
 
 
 def build_wan_training_dataset(args, use_data_process_controls=False):
     if use_data_process_controls:
-        target_fps = args.fps if args.fps is not None else 24
-        fix_frame_rate = args.fps is not None
+        if getattr(args, "video_sampling_mode", "prefix") == "uniform_full_video":
+            target_fps = 24
+            fix_frame_rate = False
+        else:
+            target_fps = args.fps if args.fps is not None else 24
+            fix_frame_rate = args.fps is not None
         frame_processor = ImageCropAndResize(
             args.height,
             args.width,
@@ -316,6 +387,7 @@ def build_wan_training_dataset(args, use_data_process_controls=False):
             frame_rate=target_fps,
             fix_frame_rate=fix_frame_rate,
             frame_processor=frame_processor,
+            video_sampling_mode=getattr(args, "video_sampling_mode", "prefix"),
         ),
         special_operator_map={
             "animate_face_video": ToAbsolutePath(args.dataset_base_path)
@@ -333,6 +405,7 @@ def build_wan_training_dataset(args, use_data_process_controls=False):
                 ),
                 frame_rate=target_fps,
                 fix_frame_rate=fix_frame_rate,
+                video_sampling_mode=getattr(args, "video_sampling_mode", "prefix"),
             ),
             "input_audio": ToAbsolutePath(args.dataset_base_path) >> LoadAudio(sr=16000),
         },

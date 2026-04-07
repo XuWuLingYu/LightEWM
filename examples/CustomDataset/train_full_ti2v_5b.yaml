@@ -3,7 +3,7 @@ task: train
 runner:
   class_path: lightewm.runner.wan.wan_training.WanTrainRunner
   params:
-    output_path: ./logs/train/Wan2.2-TI2V-5B-Libero
+    output_path: ./logs/train/Wan2.2-TI2V-5B
     height: 480
     width: 832
     dataset_repeat: 100
@@ -17,21 +17,21 @@ runner:
     use_gradient_checkpointing: true
     wandb_enabled: true
     wandb_project: LightEWM
-    wandb_run_name: Wan2.2-TI2V-5B-Libero
+    wandb_run_name: Wan2.2-TI2V-5B
     wandb_mode: online
     wandb_log_every: 5
     validation_every_steps: 2000
     validation_extra_steps: [10]
     validation_num_samples: 1
-    validation_fps: 10
+    validation_fps: 16
     validation_quality: 5
     validation_seed_base: 0
-    validation_input_image_resize_mode: letterbox
+    validation_input_image_resize_mode: stretch
     validation_infer_kwargs:
       negative_prompt: ""
       height: 480
       width: 832
-      num_frames: 49
+      num_frames: 81
       cfg_scale: 1.0
       num_inference_steps: 50
       tiled: true
@@ -53,7 +53,7 @@ model:
 dataset:
   class_path: lightewm.dataset.unified_dataset.UnifiedDataset
   params:
-    dataset_base_path: ./data/libero_i2v_train/latent_cache_ti2v_5b
+    dataset_base_path: ./data/your_dataset/latent_cache_ti2v_5b
     dataset_metadata_path: null
 
 runtime:
@@ -61,11 +61,9 @@ runtime:
     gradient_accumulation_steps: 1
 
 validation_dataset:
-  class_path: lightewm.dataset.libero_infer.LiberoInferenceDataset
+  class_path: lightewm.dataset.video_infer.VideoInferenceDataset
   params:
-    base_path: data/libero_i2v_train
-    metadata_path: data/libero_i2v_train/metadata_dense_prompt.csv
+    base_path: data/your_dataset
+    metadata_path: data/your_dataset/metadata.csv
     video_key: video
     prompt_key: prompt
-    demo_id_key: demo_id
-    camera_key_col: camera_key

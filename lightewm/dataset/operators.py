@@ -1,4 +1,5 @@
 import math
+import numpy as np
 import torch, torchvision, imageio, os
 import imageio.v3 as iio
 from PIL import Image
@@ -134,12 +135,21 @@ class ToList(DataProcessingOperator):
     
 
 class FrameSamplerByRateMixin:
-    def __init__(self, num_frames=81, time_division_factor=4, time_division_remainder=1, frame_rate=24, fix_frame_rate=False):
+    def __init__(
+        self,
+        num_frames=81,
+        time_division_factor=4,
+        time_division_remainder=1,
+        frame_rate=24,
+        fix_frame_rate=False,
+        video_sampling_mode="prefix",
+    ):
         self.num_frames = num_frames
         self.time_division_factor = time_division_factor
         self.time_division_remainder = time_division_remainder
         self.frame_rate = frame_rate
         self.fix_frame_rate = fix_frame_rate
+        self.video_sampling_mode = video_sampling_mode
 
     def get_reader(self, data: str):
         return imageio.get_reader(data)
@@ -190,8 +200,25 @@ class FrameSamplerByRateMixin:
 
 
 class LoadVideo(DataProcessingOperator, FrameSamplerByRateMixin):
-    def __init__(self, num_frames=81, time_division_factor=4, time_division_remainder=1, frame_processor=lambda x: x, frame_rate=24, fix_frame_rate=False):
-        FrameSamplerByRateMixin.__init__(self, num_frames, time_division_factor, time_division_remainder, frame_rate, fix_frame_rate)
+    def __init__(
+        self,
+        num_frames=81,
+        time_division_factor=4,
+        time_division_remainder=1,
+        frame_processor=lambda x: x,
+        frame_rate=24,
+        fix_frame_rate=False,
+        video_sampling_mode="prefix",
+    ):
+        FrameSamplerByRateMixin.__init__(
+            self,
+            num_frames,
+            time_division_factor,
+            time_division_remainder,
+            frame_rate,
+            fix_frame_rate,
+            video_sampling_mode=video_sampling_mode,
+        )
         # frame_processor is build in the video loader for high efficiency.
         self.frame_processor = frame_processor
 
@@ -207,6 +234,12 @@ class LoadVideo(DataProcessingOperator, FrameSamplerByRateMixin):
 
     def build_sequence_ids(self, available_frames, context_start, context_window_size, pad_last):
         if context_window_size is None:
+            if self.video_sampling_mode == "uniform_full_video":
+                if available_frames <= 0:
+                    return []
+                if available_frames == 1:
+                    return [0] * self.num_frames
+                return np.rint(np.linspace(0, available_frames - 1, self.num_frames)).astype(int).tolist()
             num_frames = min(self.num_frames, available_frames)
             if num_frames < self.num_frames:
                 while num_frames > 1 and num_frames % self.time_division_factor != self.time_division_remainder:

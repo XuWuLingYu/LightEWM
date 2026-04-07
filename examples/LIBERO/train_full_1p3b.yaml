@@ -3,13 +3,13 @@ task: train
 runner:
   class_path: lightewm.runner.wan.wan_training.WanTrainRunner
   params:
-    output_path: ./logs/train/Wan2.2-TI2V-5B-Libero
+    output_path: ./logs/train/Wan1.3B-I2V-Libero
     height: 480
     width: 832
     dataset_repeat: 100
     trainable_models: dit
     extra_inputs: input_image
-    learning_rate: 1.0e-5
+    learning_rate: 2.0e-5
     batch_size: 1
     num_epochs: 999
     save_steps: 5000
@@ -17,7 +17,7 @@ runner:
     use_gradient_checkpointing: true
     wandb_enabled: true
     wandb_project: LightEWM
-    wandb_run_name: Wan2.2-TI2V-5B-Libero
+    wandb_run_name: Wan1.3B-I2V-Libero
     wandb_mode: online
     wandb_log_every: 5
     validation_every_steps: 2000
@@ -38,22 +38,20 @@ runner:
     task: sft:train
 
 model:
-  class_path: lightewm.model.wan.pipeline_ti2v_5b.WanTI2V5BPipeline
+  class_path: lightewm.model.wan.pipeline.WanVideoPipeline
   params:
     device: cuda
     torch_dtype: bfloat16
-    tokenizer_path: checkpoints/Wan2.2-TI2V-5B/google/umt5-xxl
     model_paths:
-      - - checkpoints/Wan2.2-TI2V-5B/diffusion_pytorch_model-00001-of-00003.safetensors
-        - checkpoints/Wan2.2-TI2V-5B/diffusion_pytorch_model-00002-of-00003.safetensors
-        - checkpoints/Wan2.2-TI2V-5B/diffusion_pytorch_model-00003-of-00003.safetensors
-      - checkpoints/Wan2.2-TI2V-5B/models_t5_umt5-xxl-enc-bf16.pth
-      - checkpoints/Wan2.2-TI2V-5B/Wan2.2_VAE.pth
+      - checkpoints/Wan2.1-I2V-1.3B/diffusion_pytorch_model.safetensors
+      - checkpoints/Wan2.1-I2V-1.3B/models_t5_umt5-xxl-enc-bf16.pth
+      - checkpoints/Wan2.1-I2V-1.3B/Wan2.1_VAE.pth
+      - checkpoints/Wan2.1-I2V-1.3B/models_clip_open-clip-xlm-roberta-large-vit-huge-14.pth
 
 dataset:
   class_path: lightewm.dataset.unified_dataset.UnifiedDataset
   params:
-    dataset_base_path: ./data/libero_i2v_train/latent_cache_ti2v_5b
+    dataset_base_path: ./data/libero_i2v_train/latent_cache
     dataset_metadata_path: null
 
 runtime:

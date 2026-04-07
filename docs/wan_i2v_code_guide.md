@@ -50,5 +50,5 @@ python -m py_compile \
   lightewm/runner/wan/wan_data_preprocess.py \
   lightewm/runner/wan/wan_infer.py
 
-python run.py --config examples/LIBERO/infer.yaml --dry-run
+python run.py --config examples/LIBERO/infer_1p3b.yaml --dry-run
 ```

@@ -1,0 +1,24 @@
+_base_:
+  - train_full_14b.yaml
+
+runner:
+  params:
+    output_path: ./logs/train/WoW-Wan-14B-Libero
+    wandb_run_name: WoW-Wan-14B-Libero
+
+model:
+  params:
+    tokenizer_path: checkpoints/WoW-1-Wan-14B-2M/google/umt5-xxl
+    model_paths:
+      - - checkpoints/WoW-1-Wan-14B-2M/diffusion_pytorch_model-00001-of-00007.safetensors
+        - checkpoints/WoW-1-Wan-14B-2M/diffusion_pytorch_model-00002-of-00007.safetensors
+        - checkpoints/WoW-1-Wan-14B-2M/diffusion_pytorch_model-00003-of-00007.safetensors
+        - checkpoints/WoW-1-Wan-14B-2M/diffusion_pytorch_model-00004-of-00007.safetensors
+        - checkpoints/WoW-1-Wan-14B-2M/diffusion_pytorch_model-00005-of-00007.safetensors
+        - checkpoints/WoW-1-Wan-14B-2M/diffusion_pytorch_model-00006-of-00007.safetensors
+        - checkpoints/WoW-1-Wan-14B-2M/diffusion_pytorch_model-00007-of-00007.safetensors
+      - checkpoints/WoW-1-Wan-14B-2M/models_t5_umt5-xxl-enc-bf16.pth
+      - checkpoints/WoW-1-Wan-14B-2M/Wan2.1_VAE.pth
+      - checkpoints/WoW-1-Wan-14B-2M/models_clip_open-clip-xlm-roberta-large-vit-huge-14.pth
+    dit_checkpoint_overlays:
+      - checkpoints/WoW-1-Wan-14B-2M/WoW_video_dit.pt

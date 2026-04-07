@@ -1,5 +1,5 @@
 from .operators import *
-import torch, json, pandas
+import torch, json, pandas, traceback
 
 
 class UnifiedDataset(torch.utils.data.Dataset):
@@ -44,6 +44,7 @@ class UnifiedDataset(torch.utils.data.Dataset):
         num_frames=81, time_division_factor=4, time_division_remainder=1,
         frame_rate=24, fix_frame_rate=False,
         frame_processor=None,
+        video_sampling_mode="prefix",
     ):
         if frame_processor is None:
             frame_processor = ImageCropAndResize(height, width, max_pixels, height_division_factor, width_division_factor)
@@ -58,6 +59,7 @@ class UnifiedDataset(torch.utils.data.Dataset):
                     num_frames, time_division_factor, time_division_remainder,
                     frame_processor=frame_processor,
                     frame_rate=frame_rate, fix_frame_rate=fix_frame_rate,
+                    video_sampling_mode=video_sampling_mode,
                 )),
             ])),
             (dict, ToAbsolutePath(base_path) >> RouteByExtensionName(operator_map=[
@@ -70,6 +72,7 @@ class UnifiedDataset(torch.utils.data.Dataset):
                     num_frames, time_division_factor, time_division_remainder,
                     frame_processor=frame_processor,
                     frame_rate=frame_rate, fix_frame_rate=fix_frame_rate,
+                    video_sampling_mode=video_sampling_mode,
                 )),
             ])),
         ])
@@ -105,19 +108,33 @@ class UnifiedDataset(torch.utils.data.Dataset):
             metadata = pandas.read_csv(metadata_path)
             self.data = [metadata.iloc[i].to_dict() for i in range(len(metadata))]
 
+    def _build_error_item(self, data_id, source_item, exc: Exception):
+        return {
+            "__load_error__": str(exc),
+            "__load_error_type__": type(exc).__name__,
+            "__load_error_traceback__": traceback.format_exc(limit=5),
+            "__data_id__": int(data_id),
+            "__load_from_cache__": bool(self.load_from_cache),
+            "__source_item__": source_item,
+        }
+
     def __getitem__(self, data_id):
-        if self.load_from_cache:
-            data = self.cached_data[data_id % len(self.cached_data)]
-            data = self.cached_data_operator(data)
-        else:
-            data = self.data[data_id % len(self.data)].copy()
-            for key in self.data_file_keys:
-                if key in data:
-                    if key in self.special_operator_map:
-                        data[key] = self.special_operator_map[key](data[key])
-                    elif key in self.data_file_keys:
-                        data[key] = self.main_data_operator(data[key])
-        return data
+        try:
+            if self.load_from_cache:
+                source_item = self.cached_data[data_id % len(self.cached_data)]
+                data = self.cached_data_operator(source_item)
+            else:
+                source_item = self.data[data_id % len(self.data)].copy()
+                data = source_item.copy()
+                for key in self.data_file_keys:
+                    if key in data:
+                        if key in self.special_operator_map:
+                            data[key] = self.special_operator_map[key](data[key])
+                        elif key in self.data_file_keys:
+                            data[key] = self.main_data_operator(data[key])
+            return data
+        except Exception as exc:
+            return self._build_error_item(data_id, source_item, exc)
 
     def __len__(self):
         if self.max_data_items is not None:

@@ -13,7 +13,7 @@ runner:
       height: 480
       width: 832
       num_frames: 49
-      cfg_scale: 5.0
+      cfg_scale: 1.0
       num_inference_steps: 50
       tiled: true
 

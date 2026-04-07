@@ -64,6 +64,9 @@ def count_available_video_frames(video_path, target_fps=None):
 def build_context_window_metadata(args):
     if args.dataset_metadata_path is None:
         return None
+    if getattr(args, "video_sampling_mode", "prefix") == "uniform_full_video":
+        print("[ContextWindow] Skip metadata expansion because video_sampling_mode=uniform_full_video")
+        return args.dataset_metadata_path
     if args.context_window_stride <= 0:
         raise ValueError("--context_window_stride must be a positive integer.")
 
@@ -236,6 +239,7 @@ class WanCacheRunner:
                 "audio_processor_path": args.audio_processor_path,
                 "fp8_models": args.fp8_models,
                 "offload_models": args.offload_models,
+                "dit_checkpoint_overlays": args.dit_checkpoint_overlays,
                 "device": "cpu" if args.initialize_model_on_cpu else accelerator.device,
                 "torch_dtype": "bfloat16",
             },

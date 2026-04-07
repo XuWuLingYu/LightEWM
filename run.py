@@ -114,16 +114,46 @@ def derive_config_name(config_path: str):
 def _get_launch_key():
     master_addr = os.environ.get("MASTER_ADDR", "")
     master_port = os.environ.get("MASTER_PORT", "")
-    world_size = os.environ.get("WORLD_SIZE", "1")
-    return f"{master_addr}:{master_port}:{world_size}"
+    num_processes = (
+        os.environ.get("ACCELERATE_NUM_PROCESSES")
+        or os.environ.get("WORLD_SIZE")
+        or os.environ.get("SLURM_NTASKS")
+        or "1"
+    )
+    machine_rank = (
+        os.environ.get("ACCELERATE_MACHINE_RANK")
+        or os.environ.get("MACHINE_RANK")
+        or os.environ.get("NODE_RANK")
+        or "0"
+    )
+    return f"{master_addr}:{master_port}:{num_processes}:{machine_rank}"
+
+
+def _get_distributed_rank_and_world_size():
+    rank = (
+        os.environ.get("RANK")
+        or os.environ.get("ACCELERATE_PROCESS_INDEX")
+        or os.environ.get("SLURM_PROCID")
+        or "0"
+    )
+    world_size = (
+        os.environ.get("WORLD_SIZE")
+        or os.environ.get("ACCELERATE_NUM_PROCESSES")
+        or os.environ.get("SLURM_NTASKS")
+        or "1"
+    )
+    return int(rank), int(world_size)
 
 
 def resolve_run_id(config_name: str):
+    forced_run_id = os.environ.get("LIGHTEWM_RUN_ID", "").strip()
+    if forced_run_id:
+        return forced_run_id
+
     base_dir = Path("logs") / config_name
     base_dir.mkdir(parents=True, exist_ok=True)
     run_context_path = base_dir / ".run_context.json"
-    rank = int(os.environ.get("RANK", "0"))
-    world_size = int(os.environ.get("WORLD_SIZE", "1"))
+    rank, world_size = _get_distributed_rank_and_world_size()
     launch_key = _get_launch_key()
 
     if world_size <= 1:

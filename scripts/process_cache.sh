@@ -157,6 +157,9 @@ log "Metadata path: $METADATA_PATH"
 log "Output path: $OUTPUT_PATH"
 log "Detected GPUs: $gpu_count"
 log "Accelerate config: num_processes=$NUM_PROCESSES, num_machines=$NUM_MACHINES, mixed_precision=$MIXED_PRECISION, dynamo_backend=$DYNAMO_BACKEND"
+LIGHTEWM_RUN_ID=${LIGHTEWM_RUN_ID:-$(date -u +%Y%m%d_%H%M%S)}
+export LIGHTEWM_RUN_ID
+log "Shared run id: $LIGHTEWM_RUN_ID"
 
 cmd=(
   accelerate launch

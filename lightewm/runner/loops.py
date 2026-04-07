@@ -1,3 +1,4 @@
+import json
 import os, torch
 from tqdm import tqdm
 from accelerate import Accelerator
@@ -70,6 +71,30 @@ def _validate_cached_sample(sample, expected_latent_frames: int = 21):
     return True, ""
 
 
+def _extract_data_error(sample):
+    if isinstance(sample, dict) and "__load_error__" in sample:
+        return sample
+    return None
+
+
+def _write_bad_sample_record(output_root: str, process_index: int, data_id: int, sample: dict):
+    quarantine_dir = os.path.join(output_root, "_bad_quarantine", f"rank{int(process_index)}")
+    os.makedirs(quarantine_dir, exist_ok=True)
+    quarantine_path = os.path.join(quarantine_dir, f"{int(data_id):08d}.json")
+    payload = {
+        "data_id": int(data_id),
+        "process_index": int(process_index),
+        "error_type": sample.get("__load_error_type__", "UnknownError"),
+        "error": sample.get("__load_error__", ""),
+        "traceback": sample.get("__load_error_traceback__", ""),
+        "load_from_cache": bool(sample.get("__load_from_cache__", False)),
+        "source_item": sample.get("__source_item__", None),
+    }
+    with open(quarantine_path, "w", encoding="utf-8") as f:
+        json.dump(payload, f, ensure_ascii=False, default=str, indent=2)
+    return quarantine_path
+
+
 def launch_training_task(
     accelerator: Accelerator,
     dataset: torch.utils.data.Dataset,
@@ -114,11 +139,23 @@ def launch_training_task(
                 batch_items = data if isinstance(data, list) else [data]
                 losses = []
                 for sample in batch_items:
+                    load_error = _extract_data_error(sample)
+                    if load_error is not None:
+                        quarantine_path = _write_bad_sample_record(model_logger.output_path, accelerator.process_index, global_step, load_error)
+                        print(
+                            f"[Train][ALERT][rank{accelerator.process_index}] "
+                            f"Skip broken sample at step={global_step}. "
+                            f"error={load_error.get('__load_error__', '')} "
+                            f"quarantine={quarantine_path}"
+                        )
+                        continue
                     if dataset.load_from_cache:
                         loss_sample = model({}, inputs=sample)
                     else:
                         loss_sample = model(sample)
                     losses.append(loss_sample)
+                if len(losses) == 0:
+                    continue
                 loss = torch.stack(losses).mean()
                 accelerator.backward(loss)
                 optimizer.step()
@@ -165,32 +202,45 @@ def launch_data_process_task(
     model.to(device=accelerator.device)
     model, dataloader = accelerator.prepare(model, dataloader)
     saved_count = 0
-    skipped_count = 0
+    skipped_invalid_count = 0
+    skipped_broken_count = 0
     
     for data_id, data in enumerate(tqdm(dataloader)):
         with accelerator.accumulate(model):
             with torch.no_grad():
                 folder = os.path.join(model_logger.output_path, str(accelerator.process_index))
                 os.makedirs(folder, exist_ok=True)
+                load_error = _extract_data_error(data)
+                if load_error is not None:
+                    skipped_broken_count += 1
+                    quarantine_path = _write_bad_sample_record(model_logger.output_path, accelerator.process_index, data_id, load_error)
+                    print(
+                        f"[DataProcess][ALERT][rank{accelerator.process_index}] "
+                        f"Broken sample {data_id} skipped. "
+                        f"error={load_error.get('__load_error__', '')} "
+                        f"quarantine={quarantine_path}"
+                    )
+                    continue
                 data = model(data)
                 valid, reason = _validate_cached_sample(data, expected_latent_frames=expected_latent_frames)
                 if not valid:
-                    skipped_count += 1
-                    if skipped_count <= 20:
+                    skipped_invalid_count += 1
+                    if skipped_invalid_count <= 20:
                         print(f"[DataProcess][rank{accelerator.process_index}] Skip sample {data_id}: {reason}")
                     continue
                 save_path = os.path.join(model_logger.output_path, str(accelerator.process_index), f"{saved_count}.pth")
                 torch.save(data, save_path)
                 saved_count += 1
 
-    local_stats = torch.tensor([saved_count, skipped_count], device=accelerator.device, dtype=torch.long)
-    all_stats = accelerator.gather(local_stats).reshape(-1, 2)
+    local_stats = torch.tensor([saved_count, skipped_invalid_count, skipped_broken_count], device=accelerator.device, dtype=torch.long)
+    all_stats = accelerator.gather(local_stats).reshape(-1, 3)
     if accelerator.is_main_process:
         total_saved = int(all_stats[:, 0].sum().item())
-        total_skipped = int(all_stats[:, 1].sum().item())
+        total_skipped_invalid = int(all_stats[:, 1].sum().item())
+        total_skipped_broken = int(all_stats[:, 2].sum().item())
         print(
             f"[DataProcess] Completed cache generation. "
-            f"Saved={total_saved}, SkippedInvalid={total_skipped}, "
+            f"Saved={total_saved}, SkippedInvalid={total_skipped_invalid}, SkippedBroken={total_skipped_broken}, "
             f"ConfigNumFrames={configured_num_frames if configured_num_frames > 0 else 'unknown'}, "
             f"ExpectedLatentFrames={expected_latent_frames}"
         )

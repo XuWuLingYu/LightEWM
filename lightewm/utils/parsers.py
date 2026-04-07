@@ -82,6 +82,14 @@ def build_wan_i2v_parser():
         help="Target FPS for loading videos in data-process stage. Leave empty to keep source FPS.",
     )
     parser.add_argument(
+        "--video_sampling_mode",
+        type=str,
+        default="prefix",
+        choices=["prefix", "uniform_full_video"],
+        help="Video sampling mode in data-process stage. `prefix` keeps the current prefix/context-window behavior. "
+             "`uniform_full_video` samples each whole video uniformly to exactly num_frames and skips sliding windows.",
+    )
+    parser.add_argument(
         "--resize_mode",
         type=str,
         default="stretch",
