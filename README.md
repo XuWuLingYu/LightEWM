@@ -52,6 +52,12 @@ See [LIBERO example](examples/LIBERO/README.md).
 
 See [CustomDataset example](examples/CustomDataset/README.md).
 
+## 🗂️ Model Zoo
+
+- `XuWuLingYu/Wan2.2-5B-Libero`
+  https://huggingface.co/XuWuLingYu/Wan2.2-5B-Libero/tree/main
+  Finetuned Wan2.2 TI2V 5B checkpoint on the full LIBERO dataset.
+
 ## 📚 Reference
 
 - DiffSynth-Studio: <https://github.com/modelscope/DiffSynth-Studio>

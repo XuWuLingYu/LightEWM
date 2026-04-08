@@ -63,6 +63,13 @@ hf download Wan-AI/Wan2.2-TI2V-5B \
   --local-dir ./checkpoints/Wan2.2-TI2V-5B
 ```
 
+Optional: download our LIBERO finetuned 5B checkpoint for direct inference:
+
+```bash
+hf download XuWuLingYu/Wan2.2-5B-Libero \
+  --local-dir ./checkpoints/Wan2.2-5B-Libero
+```
+
 ## 2) Build latent cache
 
 ```bash
@@ -109,3 +116,17 @@ bash scripts/infer.sh \
 ```
 
 If `--ckpt` is not provided, inference uses the official Wan2.2-TI2V-5B checkpoint from the example config.
+
+## 5) Use Our LIBERO Finetuned 5B Checkpoint
+
+If you want to run LIBERO inference with our finetuned checkpoint instead of the original Wan2.2 TI2V 5B DiT, use:
+
+```bash
+bash scripts/infer.sh \
+  --config examples/LIBERO/infer_ti2v_5b.yaml \
+  --dataset-base-path data/libero_i2v_train \
+  --metadata-path data/libero_i2v_train/metadata_dense_prompt.csv \
+  --ckpt checkpoints/Wan2.2-5B-Libero/checkpoint.safetensors
+```
+
+This checkpoint was finetuned on the full LIBERO dataset for `85000` steps with `lr=1e-5`, using `49` frames at `10 FPS`.
