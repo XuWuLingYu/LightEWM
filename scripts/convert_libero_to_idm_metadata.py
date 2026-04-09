@@ -34,7 +34,8 @@ def parse_args():
     parser.add_argument("--output-dir", type=str, required=True, help="Output directory for images and metadata.")
     parser.add_argument("--suites", type=str, default=",".join(DEFAULT_SUITES), help="Comma-separated suite names.")
     parser.add_argument("--camera-key", type=str, default="agentview_rgb", help="Image key inside obs.")
-    parser.add_argument("--target-key", type=str, default="ee_states", help="Absolute target key inside obs.")
+    parser.add_argument("--target-key", type=str, default="ee_states", help="Absolute EE target key inside obs.")
+    parser.add_argument("--gripper-key", type=str, default="gripper_states", help="Gripper state key inside obs.")
     parser.add_argument("--frame-stride", type=int, default=1, help="Export every N-th frame.")
     parser.add_argument("--min-episode-len", type=int, default=1, help="Skip shorter episodes.")
     parser.add_argument("--val-ratio", type=float, default=0.05, help="Validation ratio.")
@@ -56,11 +57,12 @@ def count_export_rows(args, suites):
                 for demo_key in sorted(h5_file["data"].keys()):
                     episode = h5_file["data"][demo_key]
                     obs = episode["obs"]
-                    if args.camera_key not in obs or args.target_key not in obs:
+                    if args.camera_key not in obs or args.target_key not in obs or args.gripper_key not in obs:
                         continue
                     images = obs[args.camera_key]
                     targets = obs[args.target_key]
-                    length = min(len(images), len(targets))
+                    gripper = obs[args.gripper_key]
+                    length = min(len(images), len(targets), len(gripper))
                     if length < args.min_episode_len:
                         continue
                     total += len(range(0, length, max(1, int(args.frame_stride))))
@@ -103,11 +105,12 @@ def main():
                             for demo_key in sorted(h5_file["data"].keys()):
                                 episode = h5_file["data"][demo_key]
                                 obs = episode["obs"]
-                                if args.camera_key not in obs or args.target_key not in obs:
+                                if args.camera_key not in obs or args.target_key not in obs or args.gripper_key not in obs:
                                     continue
                                 images = obs[args.camera_key]
                                 targets = obs[args.target_key]
-                                length = min(len(images), len(targets))
+                                gripper = obs[args.gripper_key]
+                                length = min(len(images), len(targets), len(gripper))
                                 if length < args.min_episode_len:
                                     continue
                                 split = deterministic_split(f"{suite}/{task_name}/{demo_key}", args.val_ratio, args.test_ratio)
@@ -116,7 +119,9 @@ def main():
                                     image_abs = output_dir / image_rel
                                     image_abs.parent.mkdir(parents=True, exist_ok=True)
 
-                                    target = targets[frame_index]
+                                    target = list(targets[frame_index])
+                                    gripper_scalar = float(gripper[frame_index][0])
+                                    target.append(gripper_scalar)
                                     row = {
                                         "sample_id": f"{suite}/{task_name}/{demo_key}/{frame_index}",
                                         "image": image_rel.as_posix(),
@@ -165,9 +170,11 @@ def main():
             "num_rows": rows_written,
             "camera_key": args.camera_key,
             "target_key": args.target_key,
+            "gripper_key": args.gripper_key,
+            "target_dim": 7,
             "workers": int(args.workers),
             "image_transform": "flip_left_right_then_flip_top_bottom",
-            "note": "This exports absolute targets from obs/<target-key>. Do not use raw LIBERO relative actions for this IDM path.",
+            "note": "This exports 7D absolute targets: ee_states(6) + gripper_states[...,0](1). Do not use raw LIBERO relative actions for this IDM path.",
         }
     )
 

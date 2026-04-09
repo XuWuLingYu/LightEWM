@@ -2,10 +2,12 @@
 
 This example trains AnyPos on LIBERO through exported `image + abs action` metadata.
 
+If you have not downloaded the LIBERO dataset yet, see [examples/LIBERO/README.md](/mnt/world_foundational_model/wfm_ckp-fileset/qianzezhong/LightEWM/examples/LIBERO/README.md) first.
+
 Important:
 - This path assumes absolute action targets.
 - Do not use raw LIBERO `actions` here. Those are relative control commands.
-- The default export uses `obs/ee_states` and writes it as `abs_action_*` columns.
+- The default export uses `7D = obs/ee_states (6) + obs/gripper_states[...,0] (1)` and writes it as `abs_action_*` columns.
 - The exported images are flipped left-right and top-bottom by default.
 - Training itself does not apply an extra fixed flip on top of the exported metadata.
 
@@ -55,6 +57,6 @@ accelerate launch \
 The exported CSV uses:
 - `image`
 - `split`
-- `abs_action_0 ... abs_action_5`
+- `abs_action_0 ... abs_action_6`
 
 The train script also supports JSONL metadata and a single `abs_action` field when it is a JSON list string / list.
