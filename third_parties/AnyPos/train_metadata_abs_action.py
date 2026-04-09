@@ -19,10 +19,11 @@ from idm.preprocessor import DinoPreprocessor
 
 
 def parse_args():
-    parser = argparse.ArgumentParser(description="Train AnyPos on image + absolute-action metadata.")
+    parser = argparse.ArgumentParser(description="Train AnyPos on media + absolute-action metadata.")
     parser.add_argument("--metadata_path", type=str, required=True, help="CSV/JSONL metadata path.")
-    parser.add_argument("--image_base_path", type=str, default=None, help="Optional base path for relative image paths.")
+    parser.add_argument("--image_base_path", type=str, default=None, help="Optional base path for relative image/video paths.")
     parser.add_argument("--image_key", type=str, default="image", help="Image path field name.")
+    parser.add_argument("--video_key", type=str, default="video", help="Video path field name.")
     parser.add_argument("--action_key", type=str, default="abs_action", help="Absolute action field name or prefix.")
     parser.add_argument("--split_key", type=str, default="split", help="Split field name.")
     parser.add_argument("--id_key", type=str, default=None, help="Optional stable id field for deterministic split.")
@@ -162,6 +163,7 @@ def main():
         image_base_path=args.image_base_path,
         split="train",
         image_key=args.image_key,
+        video_key=args.video_key,
         action_key=args.action_key,
         split_key=args.split_key,
         id_key=args.id_key,
@@ -173,6 +175,7 @@ def main():
         image_base_path=args.image_base_path,
         split="val",
         image_key=args.image_key,
+        video_key=args.video_key,
         action_key=args.action_key,
         split_key=args.split_key,
         id_key=args.id_key,
@@ -184,6 +187,7 @@ def main():
         image_base_path=args.image_base_path,
         split="test",
         image_key=args.image_key,
+        video_key=args.video_key,
         action_key=args.action_key,
         split_key=args.split_key,
         id_key=args.id_key,
@@ -210,6 +214,7 @@ def main():
                 "train_mean": train_mean.tolist(),
                 "train_std": train_std.tolist(),
                 "image_key": args.image_key,
+                "video_key": args.video_key,
                 "action_key": args.action_key,
                 "split_key": args.split_key,
             }

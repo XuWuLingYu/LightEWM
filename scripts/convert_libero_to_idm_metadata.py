@@ -1,10 +1,13 @@
 import argparse
 import csv
 import hashlib
+import json
 from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, wait
 from pathlib import Path
 
 import h5py
+import imageio.v2 as imageio
+import numpy as np
 from PIL import Image, ImageOps
 from tqdm import tqdm
 
@@ -29,9 +32,9 @@ def deterministic_split(identifier: str, val_ratio: float, test_ratio: float) ->
 
 
 def parse_args():
-    parser = argparse.ArgumentParser(description="Convert LIBERO hdf5 to image + abs-action metadata for AnyPos IDM.")
+    parser = argparse.ArgumentParser(description="Convert LIBERO hdf5 to metadata for AnyPos IDM.")
     parser.add_argument("--libero-root", type=str, required=True, help="Raw LIBERO hdf5 root.")
-    parser.add_argument("--output-dir", type=str, required=True, help="Output directory for images and metadata.")
+    parser.add_argument("--output-dir", type=str, required=True, help="Output directory for media and metadata.")
     parser.add_argument("--suites", type=str, default=",".join(DEFAULT_SUITES), help="Comma-separated suite names.")
     parser.add_argument("--camera-key", type=str, default="agentview_rgb", help="Image key inside obs.")
     parser.add_argument("--target-key", type=str, default="ee_states", help="Absolute EE target key inside obs.")
@@ -40,13 +43,15 @@ def parse_args():
     parser.add_argument("--min-episode-len", type=int, default=1, help="Skip shorter episodes.")
     parser.add_argument("--val-ratio", type=float, default=0.05, help="Validation ratio.")
     parser.add_argument("--test-ratio", type=float, default=0.05, help="Test ratio.")
-    parser.add_argument("--image-format", type=str, default="jpg", choices=["jpg", "png"], help="Saved image format.")
+    parser.add_argument("--storage-mode", type=str, default="videos", choices=["videos", "images"], help="Export videos with action lists or per-frame images.")
+    parser.add_argument("--image-format", type=str, default="jpg", choices=["jpg", "png"], help="Saved image format in image mode.")
     parser.add_argument("--jpeg-quality", type=int, default=95, help="JPEG quality when image-format=jpg.")
-    parser.add_argument("--workers", type=int, default=8, help="Number of image export threads.")
+    parser.add_argument("--workers", type=int, default=8, help="Number of export threads.")
+    parser.add_argument("--video-fps", type=int, default=10, help="Exported video fps in video mode.")
     return parser.parse_args()
 
 
-def count_export_rows(args, suites):
+def count_export_items(args, suites):
     total = 0
     for suite in suites:
         suite_dir = Path(args.libero_root) / suite
@@ -65,36 +70,63 @@ def count_export_rows(args, suites):
                     length = min(len(images), len(targets), len(gripper))
                     if length < args.min_episode_len:
                         continue
-                    total += len(range(0, length, max(1, int(args.frame_stride))))
+                    if args.storage_mode == "videos":
+                        total += 1
+                    else:
+                        total += len(range(0, length, max(1, int(args.frame_stride))))
     return total
 
 
-def save_image(image_array, image_path: str, image_format: str, jpeg_quality: int):
-    image = Image.fromarray(image_array)
+def _flip_frame(frame):
+    image = Image.fromarray(frame)
     image = ImageOps.flip(ImageOps.mirror(image))
+    return image
+
+
+def save_image(frame, image_path: str, image_format: str, jpeg_quality: int):
+    image = _flip_frame(frame)
     if image_format == "jpg":
         image.save(image_path, quality=jpeg_quality)
     else:
         image.save(image_path)
 
 
+def save_video(frames, video_path: str, fps: int):
+    flipped = [np.asarray(_flip_frame(frame)) for frame in frames]
+    imageio.mimwrite(video_path, flipped, fps=fps)
+
+
+def build_action_sequence(targets, gripper):
+    action_sequence = []
+    for target, grip in zip(targets, gripper):
+        row = [float(v) for v in target]
+        row.append(float(grip[0]))
+        action_sequence.append(row)
+    return action_sequence
+
+
 def main():
     args = parse_args()
     suites = [suite.strip() for suite in args.suites.split(",") if suite.strip()]
     output_dir = Path(args.output_dir)
-    image_root = output_dir / "images"
-    image_root.mkdir(parents=True, exist_ok=True)
-    metadata_path = output_dir / "metadata_abs_action.csv"
-    total_rows = count_export_rows(args, suites)
+    media_root_name = "videos" if args.storage_mode == "videos" else "images"
+    media_root = output_dir / media_root_name
+    media_root.mkdir(parents=True, exist_ok=True)
+    metadata_path = output_dir / ("metadata_abs_action.jsonl" if args.storage_mode == "videos" else "metadata_abs_action.csv")
+    total_items = count_export_items(args, suites)
 
-    writer = None
-    rows_written = 0
     max_pending = max(8, int(args.workers) * 4)
     pending_futures = set()
+    rows_written = 0
 
-    with open(metadata_path, "w", encoding="utf-8", newline="") as metadata_file:
+    if args.storage_mode == "videos":
+        metadata_file = open(metadata_path, "w", encoding="utf-8")
+    else:
+        metadata_file = open(metadata_path, "w", encoding="utf-8", newline="")
+    try:
+        writer = None
         with ThreadPoolExecutor(max_workers=max(1, int(args.workers))) as executor:
-            with tqdm(total=total_rows, desc="Export LIBERO IDM metadata") as pbar:
+            with tqdm(total=total_items, desc="Export LIBERO IDM metadata") as pbar:
                 for suite in suites:
                     suite_dir = Path(args.libero_root) / suite
                     if not suite_dir.is_dir():
@@ -114,14 +146,49 @@ def main():
                                 if length < args.min_episode_len:
                                     continue
                                 split = deterministic_split(f"{suite}/{task_name}/{demo_key}", args.val_ratio, args.test_ratio)
+
+                                if args.storage_mode == "videos":
+                                    frame_indices = list(range(0, length, max(1, int(args.frame_stride))))
+                                    video_rel = Path("videos") / suite / task_name / f"{demo_key}.mp4"
+                                    video_abs = output_dir / video_rel
+                                    video_abs.parent.mkdir(parents=True, exist_ok=True)
+                                    selected_frames = [images[i].copy() for i in frame_indices]
+                                    selected_targets = [targets[i] for i in frame_indices]
+                                    selected_gripper = [gripper[i] for i in frame_indices]
+                                    row = {
+                                        "sample_id": f"{suite}/{task_name}/{demo_key}",
+                                        "video": video_rel.as_posix(),
+                                        "split": split,
+                                        "suite": suite,
+                                        "task_name": task_name,
+                                        "demo_key": demo_key,
+                                        "source_hdf5": str(hdf5_path),
+                                        "frame_indices": frame_indices,
+                                        "num_frames": len(frame_indices),
+                                        "abs_action": build_action_sequence(selected_targets, selected_gripper),
+                                    }
+                                    metadata_file.write(json.dumps(row, ensure_ascii=True) + "\n")
+                                    rows_written += 1
+
+                                    future = executor.submit(
+                                        save_video,
+                                        selected_frames,
+                                        str(video_abs),
+                                        int(args.video_fps),
+                                    )
+                                    pending_futures.add(future)
+                                    if len(pending_futures) >= max_pending:
+                                        done, pending_futures = wait(pending_futures, return_when=FIRST_COMPLETED)
+                                        for completed in done:
+                                            completed.result()
+                                    pbar.update(1)
+                                    continue
+
                                 for frame_index in range(0, length, max(1, int(args.frame_stride))):
                                     image_rel = Path("images") / suite / task_name / demo_key / f"{frame_index:06d}.{args.image_format}"
                                     image_abs = output_dir / image_rel
                                     image_abs.parent.mkdir(parents=True, exist_ok=True)
 
-                                    target = list(targets[frame_index])
-                                    gripper_scalar = float(gripper[frame_index][0])
-                                    target.append(gripper_scalar)
                                     row = {
                                         "sample_id": f"{suite}/{task_name}/{demo_key}/{frame_index}",
                                         "image": image_rel.as_posix(),
@@ -132,8 +199,10 @@ def main():
                                         "frame_index": frame_index,
                                         "source_hdf5": str(hdf5_path),
                                     }
+                                    target = [float(v) for v in targets[frame_index]]
+                                    target.append(float(gripper[frame_index][0]))
                                     for dim, value in enumerate(target):
-                                        row[f"abs_action_{dim}"] = float(value)
+                                        row[f"abs_action_{dim}"] = value
 
                                     if writer is None:
                                         writer = csv.DictWriter(metadata_file, fieldnames=list(row.keys()))
@@ -159,6 +228,8 @@ def main():
                 done, _ = wait(pending_futures)
                 for completed in done:
                     completed.result()
+    finally:
+        metadata_file.close()
 
     if rows_written == 0:
         raise RuntimeError("No LIBERO samples were exported. Check libero root / suite / keys.")
@@ -167,6 +238,7 @@ def main():
         {
             "output_dir": str(output_dir),
             "metadata_path": str(metadata_path),
+            "storage_mode": args.storage_mode,
             "num_rows": rows_written,
             "camera_key": args.camera_key,
             "target_key": args.target_key,

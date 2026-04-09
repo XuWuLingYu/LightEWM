@@ -4,7 +4,7 @@ set -euo pipefail
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 cd "$REPO_ROOT"
 
-METADATA_PATH="data/libero_idm_abs_action/metadata_abs_action.csv"
+METADATA_PATH="data/libero_idm_abs_action/metadata_abs_action.jsonl"
 IMAGE_BASE_PATH="data/libero_idm_abs_action"
 SAVE_DIR="logs/libero_idm"
 RUN_NAME="libero_abs_ee"
@@ -42,7 +42,7 @@ accelerate launch \
   third_parties/AnyPos/train_metadata_abs_action.py \
   --metadata_path "$METADATA_PATH" \
   --image_base_path "$IMAGE_BASE_PATH" \
-  --image_key image \
+  --video_key video \
   --action_key abs_action \
   --model_name direction_aware \
   --learning_rate 1e-4 \

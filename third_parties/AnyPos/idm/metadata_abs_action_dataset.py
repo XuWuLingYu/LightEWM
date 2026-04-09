@@ -2,6 +2,7 @@ import hashlib
 import json
 import os
 
+import cv2
 import numpy as np
 import pandas
 import torch
@@ -64,6 +65,7 @@ class MetadataAbsoluteActionDataset(Dataset):
         split,
         image_base_path=None,
         image_key="image",
+        video_key="video",
         action_key="abs_action",
         split_key="split",
         id_key=None,
@@ -74,34 +76,38 @@ class MetadataAbsoluteActionDataset(Dataset):
         self.split = split
         self.image_base_path = image_base_path
         self.image_key = image_key
+        self.video_key = video_key
         self.action_key = action_key
         self.split_key = split_key
         self.id_key = id_key
         self.val_ratio = float(val_ratio)
         self.test_ratio = float(test_ratio)
         self.metadata_dir = os.path.dirname(os.path.abspath(metadata_path))
+        self._video_cache = {}
 
         rows = _load_metadata_rows(metadata_path)
         if len(rows) == 0:
             raise RuntimeError(f"No metadata rows found in {metadata_path}")
 
-        self.rows = self._filter_rows(rows)
-        if len(self.rows) == 0:
+        self.samples = self._build_samples(rows)
+        if len(self.samples) == 0:
             raise RuntimeError(f"No rows matched split={split} in {metadata_path}")
         self.target_dim = self._infer_target_dim()
 
-    def _resolve_image_path(self, image_value: str):
-        if os.path.isabs(image_value):
-            return image_value
+    def _resolve_media_path(self, value: str):
+        if os.path.isabs(value):
+            return value
         if self.image_base_path:
-            return os.path.join(self.image_base_path, image_value)
-        return os.path.join(self.metadata_dir, image_value)
+            return os.path.join(self.image_base_path, value)
+        return os.path.join(self.metadata_dir, value)
 
     def _row_identifier(self, row: dict, row_index: int):
         if self.id_key and self.id_key in row:
             return str(row[self.id_key])
         if self.image_key in row:
             return str(row[self.image_key])
+        if self.video_key in row:
+            return str(row[self.video_key])
         return f"row_{row_index}"
 
     def _extract_action(self, row: dict):
@@ -120,7 +126,6 @@ class MetadataAbsoluteActionDataset(Dataset):
             indexed.sort(key=lambda x: x[0])
             return np.asarray([value for _, value in indexed], dtype=np.float32)
 
-        # Fallback to `action` / `action_0...` if action_key is the abs-action default.
         if self.action_key == "abs_action":
             if "action" in row:
                 return _parse_action_value(row["action"])
@@ -139,11 +144,30 @@ class MetadataAbsoluteActionDataset(Dataset):
             f"Row is missing action field '{self.action_key}' and indexed columns '{self.action_key}_0...'."
         )
 
-    def _filter_rows(self, rows):
-        filtered = []
+    def _extract_action_sequence(self, row: dict):
+        actions = self._extract_action(row)
+        if actions.ndim == 1:
+            return actions[None, :]
+        if actions.ndim != 2:
+            raise ValueError(f"Expected 1D or 2D action tensor, got shape {tuple(actions.shape)}")
+        return actions
+
+    def _extract_frame_indices(self, row: dict, num_frames: int):
+        frame_indices = row.get("frame_indices")
+        if frame_indices is None:
+            return list(range(num_frames))
+        parsed = _parse_action_value(frame_indices).astype(np.int64)
+        if parsed.ndim != 1:
+            raise ValueError(f"frame_indices must be 1D, got shape {tuple(parsed.shape)}")
+        if parsed.shape[0] != num_frames:
+            raise ValueError(
+                f"frame_indices length mismatch: expected {num_frames}, got {parsed.shape[0]}"
+            )
+        return [int(x) for x in parsed.tolist()]
+
+    def _build_samples(self, rows):
+        samples = []
         for row_index, row in enumerate(rows):
-            if self.image_key not in row:
-                raise KeyError(f"Row {row_index} is missing image field '{self.image_key}'.")
             row_split = row.get(self.split_key)
             if row_split is None or str(row_split).strip() == "":
                 row_split = _deterministic_split(
@@ -153,41 +177,111 @@ class MetadataAbsoluteActionDataset(Dataset):
                 )
             if str(row_split) != self.split:
                 continue
-            image_path = self._resolve_image_path(str(row[self.image_key]))
-            action = self._extract_action(row)
-            filtered.append(
-                {
-                    **row,
-                    "__row_index__": row_index,
-                    "__image_path__": image_path,
-                    "__action__": action,
-                    "__split__": str(row_split),
-                }
+
+            if self.image_key in row and str(row[self.image_key]).strip():
+                image_path = self._resolve_media_path(str(row[self.image_key]))
+                action = self._extract_action(row)
+                if action.ndim != 1:
+                    raise ValueError(
+                        f"Image row expects a single action vector, got shape {tuple(action.shape)}"
+                    )
+                samples.append(
+                    {
+                        **row,
+                        "__row_index__": row_index,
+                        "__mode__": "image",
+                        "__media_path__": image_path,
+                        "__action__": action.astype(np.float32),
+                        "__split__": str(row_split),
+                    }
+                )
+                continue
+
+            if self.video_key in row and str(row[self.video_key]).strip():
+                video_path = self._resolve_media_path(str(row[self.video_key]))
+                action_sequence = self._extract_action_sequence(row).astype(np.float32)
+                frame_indices = self._extract_frame_indices(row, action_sequence.shape[0])
+                for local_index, frame_index in enumerate(frame_indices):
+                    samples.append(
+                        {
+                            **row,
+                            "__row_index__": row_index,
+                            "__mode__": "video",
+                            "__media_path__": video_path,
+                            "__frame_index__": int(frame_index),
+                            "__sample_index_in_video__": int(local_index),
+                            "__action__": action_sequence[local_index],
+                            "__split__": str(row_split),
+                        }
+                    )
+                continue
+
+            raise KeyError(
+                f"Row {row_index} must contain either '{self.image_key}' or '{self.video_key}'."
             )
-        return filtered
+        return samples
 
     def _infer_target_dim(self):
-        return int(self.rows[0]["__action__"].shape[0])
+        return int(self.samples[0]["__action__"].shape[0])
 
     def compute_target_stats(self):
-        actions = np.stack([row["__action__"] for row in self.rows], axis=0).astype(np.float64)
+        actions = np.stack([sample["__action__"] for sample in self.samples], axis=0).astype(np.float64)
         mean = actions.mean(axis=0)
         std = np.sqrt(np.maximum(actions.var(axis=0), 1e-12))
         return torch.tensor(mean, dtype=torch.float32), torch.tensor(std, dtype=torch.float32)
 
     def __len__(self):
-        return len(self.rows)
+        return len(self.samples)
+
+    def _get_video_capture(self, video_path: str):
+        capture = self._video_cache.get(video_path)
+        if capture is None:
+            capture = cv2.VideoCapture(video_path)
+            if not capture.isOpened():
+                raise RuntimeError(f"Failed to open video: {video_path}")
+            self._video_cache[video_path] = capture
+        return capture
+
+    def _read_video_frame(self, video_path: str, frame_index: int):
+        capture = self._get_video_capture(video_path)
+        capture.set(cv2.CAP_PROP_POS_FRAMES, int(frame_index))
+        ok, frame = capture.read()
+        if not ok:
+            capture.release()
+            self._video_cache.pop(video_path, None)
+            capture = self._get_video_capture(video_path)
+            capture.set(cv2.CAP_PROP_POS_FRAMES, int(frame_index))
+            ok, frame = capture.read()
+        if not ok or frame is None:
+            raise RuntimeError(f"Failed to decode frame {frame_index} from video: {video_path}")
+        return cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
 
     def __getitem__(self, index):
-        row = self.rows[index]
-        image = Image.open(row["__image_path__"]).convert("RGB")
-        target = torch.from_numpy(row["__action__"].copy())
-        return target, np.asarray(image)
+        sample = self.samples[index]
+        if sample["__mode__"] == "image":
+            image = Image.open(sample["__media_path__"]).convert("RGB")
+            image = np.asarray(image)
+        else:
+            image = self._read_video_frame(sample["__media_path__"], sample["__frame_index__"])
+        target = torch.from_numpy(sample["__action__"].copy())
+        return target, image
 
     def get_metadata(self, index):
-        row = self.rows[index]
-        return {
-            "row_index": int(row["__row_index__"]),
-            "image_path": row["__image_path__"],
-            "split": row["__split__"],
+        sample = self.samples[index]
+        metadata = {
+            "row_index": int(sample["__row_index__"]),
+            "mode": sample["__mode__"],
+            "media_path": sample["__media_path__"],
+            "split": sample["__split__"],
         }
+        if sample["__mode__"] == "video":
+            metadata["frame_index"] = int(sample["__frame_index__"])
+            metadata["sample_index_in_video"] = int(sample["__sample_index_in_video__"])
+        return metadata
+
+    def __del__(self):
+        for capture in self._video_cache.values():
+            try:
+                capture.release()
+            except Exception:
+                pass
