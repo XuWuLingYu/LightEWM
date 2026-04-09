@@ -3,15 +3,15 @@
 # LightEWM
 
 **LightEWM: Light Embodied World Model** is an open-source training and inference framework for embodied world models.
-Our current focus is **Wan2.1-1.3B I2V**, including **LIBERO** preprocessing, latent-cache generation, full training, and inference.
+Our current focus is **Wan2.2-TI2V-5B**, including **LIBERO** preprocessing, latent-cache generation, full training, and inference.
 
 ## 🧭 Roadmap
 
-- [x] Wan2.1-1.3B I2V training and inference support
+- [x] Wan2.2-TI2V-5B training and inference support
 - [x] LIBERO preprocessing, training, and inference support
 - [ ] IDM support for video-to-action learning
-- [ ] Causal video model adaptation for Wan 1.3B
-- [ ] WAM actor implementation for Wan 1.3B
+- [ ] Causal video model adaptation for Wan 5B
+- [ ] WAM actor implementation for Wan 5B
 - [ ] CALVIN preprocessing, training, and inference support
 - [ ] Reinforcement learning on top of the world model
  
@@ -29,13 +29,6 @@ pip install flash-attn --no-build-isolation
 ```
 
 ### 2) Download checkpoint
-
-```bash
-hf download alibaba-pai/Wan2.1-Fun-1.3B-InP \
-  --local-dir ./checkpoints/Wan2.1-I2V-1.3B
-```
-
-### 3) Download Wan2.2-TI2V-5B checkpoint
 
 ```bash
 hf download Wan-AI/Wan2.2-TI2V-5B \
