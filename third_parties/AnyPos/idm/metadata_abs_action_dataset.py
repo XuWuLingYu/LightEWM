@@ -1,0 +1,193 @@
+import hashlib
+import json
+import os
+
+import numpy as np
+import pandas
+import torch
+import yaml
+from PIL import Image
+from torch.utils.data import Dataset
+
+
+def _deterministic_split(identifier: str, val_ratio: float, test_ratio: float) -> str:
+    digest = hashlib.md5(identifier.encode("utf-8")).hexdigest()
+    value = int(digest[:8], 16) / float(16 ** 8)
+    if value < test_ratio:
+        return "test"
+    if value < test_ratio + val_ratio:
+        return "val"
+    return "train"
+
+
+def _load_metadata_rows(metadata_path: str):
+    if metadata_path.endswith(".jsonl"):
+        rows = []
+        with open(metadata_path, "r", encoding="utf-8") as f:
+            for line in f:
+                line = line.strip()
+                if line:
+                    rows.append(json.loads(line))
+        return rows
+    if metadata_path.endswith(".json"):
+        with open(metadata_path, "r", encoding="utf-8") as f:
+            data = json.load(f)
+        if not isinstance(data, list):
+            raise ValueError(f"Expected a JSON list in {metadata_path}")
+        return data
+    frame = pandas.read_csv(metadata_path)
+    return [frame.iloc[i].to_dict() for i in range(len(frame))]
+
+
+def _parse_action_value(value):
+    if isinstance(value, (list, tuple, np.ndarray)):
+        return np.asarray(value, dtype=np.float32)
+    if isinstance(value, str):
+        stripped = value.strip()
+        if not stripped:
+            raise ValueError("action string is empty")
+        try:
+            parsed = json.loads(stripped)
+        except Exception:
+            try:
+                parsed = yaml.safe_load(stripped)
+            except Exception:
+                parsed = [float(x.strip()) for x in stripped.split(",") if x.strip()]
+        return np.asarray(parsed, dtype=np.float32)
+    raise TypeError(f"Unsupported action value type: {type(value).__name__}")
+
+
+class MetadataAbsoluteActionDataset(Dataset):
+    def __init__(
+        self,
+        metadata_path,
+        split,
+        image_base_path=None,
+        image_key="image",
+        action_key="abs_action",
+        split_key="split",
+        id_key=None,
+        val_ratio=0.05,
+        test_ratio=0.05,
+    ):
+        self.metadata_path = metadata_path
+        self.split = split
+        self.image_base_path = image_base_path
+        self.image_key = image_key
+        self.action_key = action_key
+        self.split_key = split_key
+        self.id_key = id_key
+        self.val_ratio = float(val_ratio)
+        self.test_ratio = float(test_ratio)
+        self.metadata_dir = os.path.dirname(os.path.abspath(metadata_path))
+
+        rows = _load_metadata_rows(metadata_path)
+        if len(rows) == 0:
+            raise RuntimeError(f"No metadata rows found in {metadata_path}")
+
+        self.rows = self._filter_rows(rows)
+        if len(self.rows) == 0:
+            raise RuntimeError(f"No rows matched split={split} in {metadata_path}")
+        self.target_dim = self._infer_target_dim()
+
+    def _resolve_image_path(self, image_value: str):
+        if os.path.isabs(image_value):
+            return image_value
+        if self.image_base_path:
+            return os.path.join(self.image_base_path, image_value)
+        return os.path.join(self.metadata_dir, image_value)
+
+    def _row_identifier(self, row: dict, row_index: int):
+        if self.id_key and self.id_key in row:
+            return str(row[self.id_key])
+        if self.image_key in row:
+            return str(row[self.image_key])
+        return f"row_{row_index}"
+
+    def _extract_action(self, row: dict):
+        if self.action_key in row:
+            return _parse_action_value(row[self.action_key])
+
+        prefix = f"{self.action_key}_"
+        indexed = []
+        for key, value in row.items():
+            if not isinstance(key, str) or not key.startswith(prefix):
+                continue
+            suffix = key[len(prefix):]
+            if suffix.isdigit():
+                indexed.append((int(suffix), float(value)))
+        if indexed:
+            indexed.sort(key=lambda x: x[0])
+            return np.asarray([value for _, value in indexed], dtype=np.float32)
+
+        # Fallback to `action` / `action_0...` if action_key is the abs-action default.
+        if self.action_key == "abs_action":
+            if "action" in row:
+                return _parse_action_value(row["action"])
+            indexed = []
+            for key, value in row.items():
+                if not isinstance(key, str) or not key.startswith("action_"):
+                    continue
+                suffix = key[len("action_"):]
+                if suffix.isdigit():
+                    indexed.append((int(suffix), float(value)))
+            if indexed:
+                indexed.sort(key=lambda x: x[0])
+                return np.asarray([value for _, value in indexed], dtype=np.float32)
+
+        raise KeyError(
+            f"Row is missing action field '{self.action_key}' and indexed columns '{self.action_key}_0...'."
+        )
+
+    def _filter_rows(self, rows):
+        filtered = []
+        for row_index, row in enumerate(rows):
+            if self.image_key not in row:
+                raise KeyError(f"Row {row_index} is missing image field '{self.image_key}'.")
+            row_split = row.get(self.split_key)
+            if row_split is None or str(row_split).strip() == "":
+                row_split = _deterministic_split(
+                    self._row_identifier(row, row_index),
+                    self.val_ratio,
+                    self.test_ratio,
+                )
+            if str(row_split) != self.split:
+                continue
+            image_path = self._resolve_image_path(str(row[self.image_key]))
+            action = self._extract_action(row)
+            filtered.append(
+                {
+                    **row,
+                    "__row_index__": row_index,
+                    "__image_path__": image_path,
+                    "__action__": action,
+                    "__split__": str(row_split),
+                }
+            )
+        return filtered
+
+    def _infer_target_dim(self):
+        return int(self.rows[0]["__action__"].shape[0])
+
+    def compute_target_stats(self):
+        actions = np.stack([row["__action__"] for row in self.rows], axis=0).astype(np.float64)
+        mean = actions.mean(axis=0)
+        std = np.sqrt(np.maximum(actions.var(axis=0), 1e-12))
+        return torch.tensor(mean, dtype=torch.float32), torch.tensor(std, dtype=torch.float32)
+
+    def __len__(self):
+        return len(self.rows)
+
+    def __getitem__(self, index):
+        row = self.rows[index]
+        image = Image.open(row["__image_path__"]).convert("RGB")
+        target = torch.from_numpy(row["__action__"].copy())
+        return target, np.asarray(image)
+
+    def get_metadata(self, index):
+        row = self.rows[index]
+        return {
+            "row_index": int(row["__row_index__"]),
+            "image_path": row["__image_path__"],
+            "split": row["__split__"],
+        }

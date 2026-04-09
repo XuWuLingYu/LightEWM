@@ -77,6 +77,20 @@ def _extract_data_error(sample):
     return None
 
 
+def _distributed_rank_id(accelerator: Accelerator) -> int:
+    world_size_env = os.environ.get("WORLD_SIZE")
+    rank_env = os.environ.get("RANK")
+    if world_size_env is not None and rank_env is not None:
+        try:
+            world_size = int(world_size_env)
+            rank = int(rank_env)
+            if world_size > 0 and 0 <= rank < world_size:
+                return rank
+        except Exception:
+            pass
+    return int(accelerator.process_index)
+
+
 def _write_bad_sample_record(output_root: str, process_index: int, data_id: int, sample: dict):
     quarantine_dir = os.path.join(output_root, "_bad_quarantine", f"rank{int(process_index)}")
     os.makedirs(quarantine_dir, exist_ok=True)
@@ -204,18 +218,19 @@ def launch_data_process_task(
     saved_count = 0
     skipped_invalid_count = 0
     skipped_broken_count = 0
+    rank_id = _distributed_rank_id(accelerator)
     
     for data_id, data in enumerate(tqdm(dataloader)):
         with accelerator.accumulate(model):
             with torch.no_grad():
-                folder = os.path.join(model_logger.output_path, str(accelerator.process_index))
+                folder = os.path.join(model_logger.output_path, str(rank_id))
                 os.makedirs(folder, exist_ok=True)
                 load_error = _extract_data_error(data)
                 if load_error is not None:
                     skipped_broken_count += 1
-                    quarantine_path = _write_bad_sample_record(model_logger.output_path, accelerator.process_index, data_id, load_error)
+                    quarantine_path = _write_bad_sample_record(model_logger.output_path, rank_id, data_id, load_error)
                     print(
-                        f"[DataProcess][ALERT][rank{accelerator.process_index}] "
+                        f"[DataProcess][ALERT][rank{rank_id}] "
                         f"Broken sample {data_id} skipped. "
                         f"error={load_error.get('__load_error__', '')} "
                         f"quarantine={quarantine_path}"
@@ -226,9 +241,9 @@ def launch_data_process_task(
                 if not valid:
                     skipped_invalid_count += 1
                     if skipped_invalid_count <= 20:
-                        print(f"[DataProcess][rank{accelerator.process_index}] Skip sample {data_id}: {reason}")
+                        print(f"[DataProcess][rank{rank_id}] Skip sample {data_id}: {reason}")
                     continue
-                save_path = os.path.join(model_logger.output_path, str(accelerator.process_index), f"{saved_count}.pth")
+                save_path = os.path.join(model_logger.output_path, str(rank_id), f"{saved_count}.pth")
                 torch.save(data, save_path)
                 saved_count += 1
 

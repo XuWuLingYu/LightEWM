@@ -3,7 +3,9 @@ checkpoints/
 data/
 logs/
 models/
-third_parties/
+third_parties/*
+!third_parties/AnyPos/
+!third_parties/AnyPos/**
 *.egg-info/
 __pycache__/
 trash_code/

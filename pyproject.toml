@@ -20,6 +20,8 @@ keywords = [
     "libero",
 ]
 dependencies = [
+    "absl-py",
+    "av",
     "torch>=2.0.0,<=2.7.0",
     "torchvision",
     "transformers",
@@ -39,7 +41,8 @@ dependencies = [
     "wandb",
     "peft",
     "datasets",
-    "httpx[socks]"
+    "httpx[socks]",
+    "opencv-python-headless"
 ]
 classifiers = [
     "Programming Language :: Python :: 3",

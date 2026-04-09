@@ -1,5 +1,6 @@
 import inspect
 import os
+import socket
 
 import accelerate
 import torch
@@ -343,6 +344,25 @@ class WanTrainRunner:
                     find_unused_parameters=args.find_unused_parameters
                 )
             ],
+        )
+        env_world_size = os.environ.get("WORLD_SIZE", "unset")
+        env_rank = os.environ.get("RANK", "unset")
+        env_local_rank = os.environ.get("LOCAL_RANK", "unset")
+        dist_world_size = "uninitialized"
+        dist_rank = "uninitialized"
+        if torch.distributed.is_available() and torch.distributed.is_initialized():
+            dist_world_size = str(torch.distributed.get_world_size())
+            dist_rank = str(torch.distributed.get_rank())
+        print(
+            "[Train][DistInfo] "
+            f"host={socket.gethostname()} "
+            f"env_world_size={env_world_size} "
+            f"env_rank={env_rank} "
+            f"env_local_rank={env_local_rank} "
+            f"accelerator_world_size={accelerator.num_processes} "
+            f"accelerator_rank={accelerator.process_index} "
+            f"torch_dist_world_size={dist_world_size} "
+            f"torch_dist_rank={dist_rank}"
         )
         dataset = build_wan_training_dataset(args, use_data_process_controls=False)
         pipe = build_wan_i2v_pipeline_from_params(
