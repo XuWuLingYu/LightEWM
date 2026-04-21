@@ -13,3 +13,4 @@ outputs
 wandb
 server_scripts/
 examples/Pretrain/
+.deepspeed_env
