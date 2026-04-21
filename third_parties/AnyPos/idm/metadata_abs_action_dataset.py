@@ -1,14 +1,19 @@
 import hashlib
 import json
 import os
+from collections import OrderedDict
 
 import cv2
+import imageio.v2 as imageio
 import numpy as np
 import pandas
 import torch
 import yaml
 from PIL import Image
 from torch.utils.data import Dataset
+
+
+cv2.setNumThreads(1)
 
 
 def _deterministic_split(identifier: str, val_ratio: float, test_ratio: float) -> str:
@@ -71,6 +76,7 @@ class MetadataAbsoluteActionDataset(Dataset):
         id_key=None,
         val_ratio=0.05,
         test_ratio=0.05,
+        max_open_videos=2,
     ):
         self.metadata_path = metadata_path
         self.split = split
@@ -82,8 +88,9 @@ class MetadataAbsoluteActionDataset(Dataset):
         self.id_key = id_key
         self.val_ratio = float(val_ratio)
         self.test_ratio = float(test_ratio)
+        self.max_open_videos = max(1, int(max_open_videos))
         self.metadata_dir = os.path.dirname(os.path.abspath(metadata_path))
-        self._video_cache = {}
+        self._video_cache = OrderedDict()
 
         rows = _load_metadata_rows(metadata_path)
         if len(rows) == 0:
@@ -96,10 +103,11 @@ class MetadataAbsoluteActionDataset(Dataset):
 
     def _resolve_media_path(self, value: str):
         if os.path.isabs(value):
-            return value
+            return os.path.abspath(value)
         if self.image_base_path:
-            return os.path.join(self.image_base_path, value)
-        return os.path.join(self.metadata_dir, value)
+            candidate = os.path.join(self.image_base_path, value)
+            return os.path.abspath(candidate)
+        return os.path.abspath(os.path.join(self.metadata_dir, value))
 
     def _row_identifier(self, row: dict, row_index: int):
         if self.id_key and self.id_key in row:
@@ -236,25 +244,50 @@ class MetadataAbsoluteActionDataset(Dataset):
     def _get_video_capture(self, video_path: str):
         capture = self._video_cache.get(video_path)
         if capture is None:
-            capture = cv2.VideoCapture(video_path)
+            capture = cv2.VideoCapture(video_path, cv2.CAP_FFMPEG)
             if not capture.isOpened():
                 raise RuntimeError(f"Failed to open video: {video_path}")
             self._video_cache[video_path] = capture
+            while len(self._video_cache) > self.max_open_videos:
+                _, old_capture = self._video_cache.popitem(last=False)
+                try:
+                    old_capture.release()
+                except Exception:
+                    pass
+        else:
+            self._video_cache.move_to_end(video_path)
         return capture
 
+    def _read_video_frame_imageio(self, video_path: str, frame_index: int):
+        reader = imageio.get_reader(video_path)
+        try:
+            frame = reader.get_data(int(frame_index))
+        finally:
+            reader.close()
+        return np.asarray(frame)
+
     def _read_video_frame(self, video_path: str, frame_index: int):
-        capture = self._get_video_capture(video_path)
-        capture.set(cv2.CAP_PROP_POS_FRAMES, int(frame_index))
-        ok, frame = capture.read()
-        if not ok:
+        try:
+            capture = self._get_video_capture(video_path)
+            capture.set(cv2.CAP_PROP_POS_FRAMES, int(frame_index))
+            ok, frame = capture.read()
+            if ok and frame is not None:
+                return cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+
             capture.release()
             self._video_cache.pop(video_path, None)
             capture = self._get_video_capture(video_path)
             capture.set(cv2.CAP_PROP_POS_FRAMES, int(frame_index))
             ok, frame = capture.read()
-        if not ok or frame is None:
-            raise RuntimeError(f"Failed to decode frame {frame_index} from video: {video_path}")
-        return cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+            if ok and frame is not None:
+                return cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+        except Exception:
+            pass
+
+        try:
+            return self._read_video_frame_imageio(video_path, frame_index)
+        except Exception as exc:
+            raise RuntimeError(f"Failed to decode frame {frame_index} from video: {video_path}") from exc
 
     def __getitem__(self, index):
         sample = self.samples[index]

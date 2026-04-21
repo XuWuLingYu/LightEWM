@@ -1,5 +1,11 @@
 from .operators import *
-import torch, json, pandas, traceback
+import json
+import os
+import traceback
+
+import pandas
+import torch
+from tqdm import tqdm
 
 
 class UnifiedDataset(torch.utils.data.Dataset):
@@ -23,6 +29,8 @@ class UnifiedDataset(torch.utils.data.Dataset):
         self.data = []
         self.cached_data = []
         self.load_from_cache = metadata_path is None
+        self.load_from_cache_local_shard = False
+        self._effective_cached_data_len = None
         self.load_metadata(metadata_path)
     
     @staticmethod
@@ -77,7 +85,23 @@ class UnifiedDataset(torch.utils.data.Dataset):
             ])),
         ])
         
-    def search_for_cached_data_files(self, path):
+    def _distributed_env_rank_and_world_size(self):
+        rank = int(os.environ.get("RANK", "0"))
+        world_size = int(os.environ.get("WORLD_SIZE", "1"))
+        return rank, world_size
+
+    def _maybe_local_cache_shard_path(self):
+        if self.base_path is None:
+            return None
+        rank, world_size = self._distributed_env_rank_and_world_size()
+        if world_size <= 1:
+            return None
+        shard_path = os.path.join(self.base_path, str(rank))
+        if os.path.isdir(shard_path):
+            return shard_path
+        return None
+
+    def search_for_cached_data_files(self, path, pbar=None):
         for file_name in os.listdir(path):
             if file_name in {".context_window", "_bad_quarantine"}:
                 continue
@@ -85,15 +109,56 @@ class UnifiedDataset(torch.utils.data.Dataset):
                 continue
             subpath = os.path.join(path, file_name)
             if os.path.isdir(subpath):
-                self.search_for_cached_data_files(subpath)
+                self.search_for_cached_data_files(subpath, pbar=pbar)
             elif subpath.endswith(".pth"):
                 self.cached_data.append(subpath)
-    
+                if pbar is not None:
+                    pbar.update(1)
+
+    def _finalize_cached_data_stats(self, search_root):
+        local_count = len(self.cached_data)
+        self._effective_cached_data_len = local_count
+        rank, world_size = self._distributed_env_rank_and_world_size()
+
+        if self.load_from_cache_local_shard and torch.distributed.is_available() and torch.distributed.is_initialized():
+            device = "cuda" if torch.cuda.is_available() else "cpu"
+            local_tensor = torch.tensor([local_count], device=device, dtype=torch.long)
+            gathered = [torch.zeros_like(local_tensor) for _ in range(torch.distributed.get_world_size())]
+            torch.distributed.all_gather(gathered, local_tensor)
+            counts = [int(x.item()) for x in gathered]
+            min_count = min(counts) if counts else local_count
+            total_count = sum(counts)
+            self._effective_cached_data_len = min_count
+            print(
+                f"[CacheSearch][rank{rank}] shard={search_root} local_files={local_count} "
+                f"effective_files={self._effective_cached_data_len}"
+            )
+            if rank == 0:
+                print(
+                    f"[CacheSearch] local-shard mode enabled. "
+                    f"world_size={world_size}, total_cached_files={total_count}, "
+                    f"min_per_rank={min_count}, max_per_rank={max(counts)}"
+                )
+            return
+
+        print(f"[CacheSearch][rank{rank}] search_root={search_root} cached_files={local_count}")
+
     def load_metadata(self, metadata_path):
         if metadata_path is None:
-            print("No metadata_path. Searching for cached data files.")
-            self.search_for_cached_data_files(self.base_path)
-            print(f"{len(self.cached_data)} cached data files found.")
+            local_shard_path = self._maybe_local_cache_shard_path()
+            search_root = local_shard_path if local_shard_path is not None else self.base_path
+            self.load_from_cache_local_shard = local_shard_path is not None
+            rank, world_size = self._distributed_env_rank_and_world_size()
+            if self.load_from_cache_local_shard:
+                print(
+                    f"No metadata_path. Searching cached data files from local shard only. "
+                    f"rank={rank}, world_size={world_size}, shard={search_root}"
+                )
+            else:
+                print("No metadata_path. Searching for cached data files.")
+            with tqdm(desc=f"[CacheSearch][rank{rank}]", unit="file", dynamic_ncols=True) as pbar:
+                self.search_for_cached_data_files(search_root, pbar=pbar)
+            self._finalize_cached_data_stats(search_root)
         elif metadata_path.endswith(".json"):
             with open(metadata_path, "r") as f:
                 metadata = json.load(f)
@@ -140,7 +205,10 @@ class UnifiedDataset(torch.utils.data.Dataset):
         if self.max_data_items is not None:
             return self.max_data_items
         elif self.load_from_cache:
-            return len(self.cached_data) * self.repeat
+            cached_len = self._effective_cached_data_len
+            if cached_len is None:
+                cached_len = len(self.cached_data)
+            return cached_len * self.repeat
         else:
             return len(self.data) * self.repeat
         

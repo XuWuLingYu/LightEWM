@@ -7,7 +7,16 @@ from ..utils.logger import ModelLogger
 
 def _maybe_init_wandb(args, accelerator: Accelerator):
     enabled = bool(getattr(args, "wandb_enabled", False)) if args is not None else False
-    if not enabled or not accelerator.is_main_process:
+    env_rank = os.environ.get("RANK", "0")
+    is_global_rank_zero = str(env_rank) == "0"
+    if not enabled:
+        print(f"[WandB] rank={env_rank} disabled by config")
+        return None
+    if not accelerator.is_main_process:
+        print(f"[WandB] rank={env_rank} skipped because accelerator.is_main_process is false")
+        return None
+    if not is_global_rank_zero:
+        print(f"[WandB] rank={env_rank} skipped because only global rank 0 initializes wandb")
         return None
     try:
         import wandb
@@ -17,6 +26,7 @@ def _maybe_init_wandb(args, accelerator: Accelerator):
     project = getattr(args, "wandb_project", "LightEWM")
     run_name = getattr(args, "wandb_run_name", None)
     mode = getattr(args, "wandb_mode", "online")
+    print(f"[WandB] rank={env_rank} initializing. project={project} run_name={run_name} mode={mode}")
     cfg = {}
     if args is not None:
         for key, value in vars(args).items():
@@ -141,7 +151,15 @@ def launch_training_task(
         num_workers=num_workers,
     )
     model.to(device=accelerator.device)
-    model, optimizer, dataloader, scheduler = accelerator.prepare(model, optimizer, dataloader, scheduler)
+    if getattr(dataset, "load_from_cache_local_shard", False):
+        deepspeed_plugin = getattr(accelerator.state, "deepspeed_plugin", None)
+        if deepspeed_plugin is not None:
+            deepspeed_plugin.deepspeed_config["train_micro_batch_size_per_gpu"] = int(batch_size)
+        model, optimizer, scheduler = accelerator.prepare(model, optimizer, scheduler)
+        if accelerator.is_main_process:
+            print("[Train] Using local cache shard mode. Skip accelerate dataloader sharding.")
+    else:
+        model, optimizer, dataloader, scheduler = accelerator.prepare(model, optimizer, dataloader, scheduler)
     wandb_run = _maybe_init_wandb(args, accelerator)
     wandb_log_every = int(getattr(args, "wandb_log_every", 10)) if args is not None else 10
     global_step = 0

@@ -18,6 +18,8 @@ Required:
 Optional:
   --override KEY=VALUE      Extra run.py override; may be repeated
   --ckpt PATH               Optional .safetensors override for model.params.model_paths[0]
+                            If omitted, LIBERO/CustomDataset 5B train configs default to
+                            checkpoints/Wan2.2-5B-Libero/checkpoint.safetensors
   --accelerate-config PATH  Optional accelerate config; defaults to configs/accelerate/deepspeed_zero3.yaml
 
 Environment:
@@ -35,6 +37,7 @@ REPO_ROOT=$(cd "$SCRIPT_DIR/.." && pwd)
 CONFIG_PATH=""
 DATASET_BASE_PATH=""
 CKPT_PATH=""
+DEFAULT_ROBOT_DIT_CKPT="checkpoints/Wan2.2-5B-Libero/checkpoint.safetensors"
 DEFAULT_ACCELERATE_CONFIG="configs/accelerate/deepspeed_zero3.yaml"
 ACCELERATE_CONFIG_FILE=${ACCELERATE_CONFIG_FILE:-$DEFAULT_ACCELERATE_CONFIG}
 NUM_MACHINES=${NUM_MACHINES:-1}
@@ -91,6 +94,23 @@ fi
 
 if [[ ! -f "$CONFIG_PATH" ]]; then
   echo "[ERROR] config not found: $CONFIG_PATH" >&2
+  exit 1
+fi
+
+CONFIG_PATH_ABS=$(cd "$(dirname "$CONFIG_PATH")" && pwd)/$(basename "$CONFIG_PATH")
+LIBERO_TRAIN_CFG_ABS="$REPO_ROOT/examples/LIBERO/train_full_ti2v_5b.yaml"
+CUSTOM_TRAIN_CFG_ABS="$REPO_ROOT/examples/CustomDataset/train_full_ti2v_5b.yaml"
+
+if [[ -z "$CKPT_PATH" ]]; then
+  if [[ "$CONFIG_PATH_ABS" == "$LIBERO_TRAIN_CFG_ABS" || "$CONFIG_PATH_ABS" == "$CUSTOM_TRAIN_CFG_ABS" ]]; then
+    CKPT_PATH="$DEFAULT_ROBOT_DIT_CKPT"
+    log "Auto checkpoint default enabled for 5B robot training config: $CKPT_PATH"
+  fi
+fi
+
+if [[ -n "$CKPT_PATH" && ! -f "$CKPT_PATH" ]]; then
+  echo "[ERROR] checkpoint not found: $CKPT_PATH" >&2
+  echo "[ERROR] please download XuWuLingYu/Wan2.2-5B-Robot to ./checkpoints/Wan2.2-5B-Libero first." >&2
   exit 1
 fi
 

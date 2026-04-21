@@ -93,7 +93,15 @@ def save_image(frame, image_path: str, image_format: str, jpeg_quality: int):
 
 def save_video(frames, video_path: str, fps: int):
     flipped = [np.asarray(_flip_frame(frame)) for frame in frames]
-    imageio.mimwrite(video_path, flipped, fps=fps)
+    with imageio.get_writer(
+        video_path,
+        fps=fps,
+        codec="mpeg4",
+        ffmpeg_log_level="error",
+        output_params=["-threads", "1"],
+    ) as writer:
+        for frame in flipped:
+            writer.append_data(frame)
 
 
 def build_action_sequence(targets, gripper):

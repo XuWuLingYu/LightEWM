@@ -5,6 +5,8 @@ import socket
 import accelerate
 import torch
 from peft import LoraConfig, inject_adapter_in_model
+from accelerate.utils import DeepSpeedPlugin
+import yaml
 
 from lightewm.model.loss import DirectDistillLoss, FlowMatchSFTLoss
 from lightewm.runner.loops import launch_training_task
@@ -328,13 +330,30 @@ class WanTrainRunner:
     def __init__(self, config):
         self.config = config
 
-    def run(self):
-        args = build_wan_i2v_runtime_args(self.config.full_config)
-        if not args.task:
-            args.task = "sft"
-
-        accelerator = accelerate.Accelerator(
+    def _build_accelerator(self, args):
+        mixed_precision = os.environ.get("LIGHTEWM_ACCELERATE_MIXED_PRECISION")
+        deepspeed_config_file = os.environ.get("LIGHTEWM_DEEPSPEED_CONFIG_FILE")
+        deepspeed_plugin = None
+        if deepspeed_config_file:
+            with open(deepspeed_config_file, "r", encoding="utf-8") as f:
+                ds_launch_config = yaml.safe_load(f) or {}
+            deepspeed_config = ds_launch_config.get("deepspeed_config")
+            if not isinstance(deepspeed_config, dict):
+                raise ValueError(
+                    f"Invalid DeepSpeed launch config: missing 'deepspeed_config' mapping in {deepspeed_config_file}"
+                )
+            deepspeed_plugin = DeepSpeedPlugin(
+                gradient_accumulation_steps=deepspeed_config.get("gradient_accumulation_steps"),
+                zero_stage=deepspeed_config.get("zero_stage"),
+                offload_optimizer_device=deepspeed_config.get("offload_optimizer_device"),
+                offload_param_device=deepspeed_config.get("offload_param_device"),
+                zero3_init_flag=deepspeed_config.get("zero3_init_flag"),
+                zero3_save_16bit_model=deepspeed_config.get("zero3_save_16bit_model"),
+            )
+        return accelerate.Accelerator(
             gradient_accumulation_steps=args.gradient_accumulation_steps,
+            mixed_precision=mixed_precision,
+            deepspeed_plugin=deepspeed_plugin,
             dataloader_config=accelerate.DataLoaderConfiguration(
                 use_seedable_sampler=True,
                 data_seed=args.data_seed,
@@ -345,6 +364,13 @@ class WanTrainRunner:
                 )
             ],
         )
+
+    def run(self):
+        args = build_wan_i2v_runtime_args(self.config.full_config)
+        if not args.task:
+            args.task = "sft"
+
+        accelerator = self._build_accelerator(args)
         env_world_size = os.environ.get("WORLD_SIZE", "unset")
         env_rank = os.environ.get("RANK", "unset")
         env_local_rank = os.environ.get("LOCAL_RANK", "unset")
@@ -361,8 +387,22 @@ class WanTrainRunner:
             f"env_local_rank={env_local_rank} "
             f"accelerator_world_size={accelerator.num_processes} "
             f"accelerator_rank={accelerator.process_index} "
+            f"accelerator_distributed_type={accelerator.distributed_type} "
             f"torch_dist_world_size={dist_world_size} "
             f"torch_dist_rank={dist_rank}"
+        )
+        print(
+            "[Train][Runtime] "
+            f"host={socket.gethostname()} "
+            f"rank={env_rank} "
+            f"world_size={env_world_size} "
+            f"batch_size={args.batch_size} "
+            f"dataset_repeat={args.dataset_repeat} "
+            f"dataset_num_workers={args.dataset_num_workers} "
+            f"wandb_enabled={args.wandb_enabled} "
+            f"wandb_project={args.wandb_project} "
+            f"wandb_run_name={args.wandb_run_name} "
+            f"wandb_mode={args.wandb_mode}"
         )
         dataset = build_wan_training_dataset(args, use_data_process_controls=False)
         pipe = build_wan_i2v_pipeline_from_params(

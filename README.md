@@ -33,6 +33,10 @@ pip install flash-attn --no-build-isolation
 ```bash
 hf download Wan-AI/Wan2.2-TI2V-5B \
   --local-dir ./checkpoints/Wan2.2-TI2V-5B
+
+# Robot-pretrained DiT init checkpoint used by LIBERO/CustomDataset 5B training
+hf download XuWuLingYu/Wan2.2-5B-Robot \
+  --local-dir ./checkpoints/Wan2.2-5B-Libero
 ```
 
 This downloads the full Hugging Face repository to `./checkpoints/Wan2.2-TI2V-5B`, which matches the default path used by the TI2V-5B example configs under `examples/LIBERO/`.

@@ -41,13 +41,23 @@ bash scripts/process_cache.sh \
 
 If you generated dense prompts, switch only the metadata path.
 
+Before training, download the robot-pretrained DiT init checkpoint:
+
+```bash
+hf download XuWuLingYu/Wan2.2-5B-Robot \
+  --local-dir ./checkpoints/Wan2.2-5B-Libero
+```
+
 ## 4) Train
 
 ```bash
 bash scripts/train_full.sh \
   --config examples/CustomDataset/train_full_ti2v_5b.yaml \
-  --dataset-base-path data/your_dataset/latent_cache_ti2v_5b
+  --dataset-base-path data/your_dataset/latent_cache_ti2v_5b \
+  --ckpt checkpoints/Wan2.2-5B-Libero/checkpoint.safetensors
 ```
+
+Note: `scripts/train_full.sh` now auto-applies this checkpoint by default for `examples/CustomDataset/train_full_ti2v_5b.yaml` even if `--ckpt` is omitted.
 
 ## 5) Infer
 

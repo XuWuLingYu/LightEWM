@@ -4,9 +4,9 @@ set -euo pipefail
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 cd "$REPO_ROOT"
 
-METADATA_PATH="data/your_dataset_idm/metadata_abs_action.jsonl"
-IMAGE_BASE_PATH="data/your_dataset_idm"
-SAVE_DIR="logs/customdataset_idm"
+METADATA_PATH="$REPO_ROOT/data/your_dataset_idm/metadata_abs_action.jsonl"
+IMAGE_BASE_PATH="$REPO_ROOT/data/your_dataset_idm"
+SAVE_DIR="$REPO_ROOT/logs/customdataset_idm"
 RUN_NAME="custom_abs_action"
 NUM_PROCESSES="${NUM_PROCESSES:-8}"
 

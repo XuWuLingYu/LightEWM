@@ -61,6 +61,10 @@ The generated file is used by default in the downstream steps:
 ```bash
 hf download Wan-AI/Wan2.2-TI2V-5B \
   --local-dir ./checkpoints/Wan2.2-TI2V-5B
+
+# Robot-pretrained DiT init checkpoint for training
+hf download XuWuLingYu/Wan2.2-5B-Robot \
+  --local-dir ./checkpoints/Wan2.2-5B-Libero
 ```
 
 Optional: download our LIBERO finetuned 5B checkpoint for direct inference:
@@ -93,8 +97,11 @@ export WANDB_MODE=disabled
 ```bash
 bash scripts/train_full.sh \
   --config examples/LIBERO/train_full_ti2v_5b.yaml \
-  --dataset-base-path data/libero_i2v_train/latent_cache_ti2v_5b
+  --dataset-base-path data/libero_i2v_train/latent_cache_ti2v_5b \
+  --ckpt checkpoints/Wan2.2-5B-Libero/checkpoint.safetensors
 ```
+
+Note: `scripts/train_full.sh` now auto-applies this checkpoint by default for `examples/LIBERO/train_full_ti2v_5b.yaml` even if `--ckpt` is omitted.
 
 ## 4) Infer
 
