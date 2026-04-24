@@ -62,14 +62,11 @@ The generated file is used by default in the downstream steps:
 hf download Wan-AI/Wan2.2-TI2V-5B \
   --local-dir ./checkpoints/Wan2.2-TI2V-5B
 
-# Robot-pretrained DiT init checkpoint for training
+# Robot-pretrained DiT init checkpoint (pretrained on broad robot datasets; recommended for finetuning init)
 hf download XuWuLingYu/Wan2.2-5B-Robot \
-  --local-dir ./checkpoints/Wan2.2-5B-Libero
-```
+  --local-dir ./checkpoints/Wan2.2-5B-Robot
 
-Optional: download our LIBERO finetuned 5B checkpoint for direct inference:
-
-```bash
+# LIBERO-pretrained checkpoint (trained on LIBERO; useful for direct LIBERO inference)
 hf download XuWuLingYu/Wan2.2-5B-Libero \
   --local-dir ./checkpoints/Wan2.2-5B-Libero
 ```
@@ -98,10 +95,10 @@ export WANDB_MODE=disabled
 bash scripts/train_full.sh \
   --config examples/LIBERO/train_full_ti2v_5b.yaml \
   --dataset-base-path data/libero_i2v_train/latent_cache_ti2v_5b \
-  --ckpt checkpoints/Wan2.2-5B-Libero/checkpoint.safetensors
+  --ckpt checkpoints/Wan2.2-5B-Robot/checkpoint.safetensors
 ```
 
-Note: `scripts/train_full.sh` now auto-applies this checkpoint by default for `examples/LIBERO/train_full_ti2v_5b.yaml` even if `--ckpt` is omitted.
+For finetuning, starting from `Wan2.2-5B-Robot` is usually better than starting from the original Wan2.2 TI2V 5B checkpoint.
 
 ## 4) Infer
 

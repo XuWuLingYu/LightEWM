@@ -36,10 +36,11 @@ hf download Wan-AI/Wan2.2-TI2V-5B \
 
 # Robot-pretrained DiT init checkpoint used by LIBERO/CustomDataset 5B training
 hf download XuWuLingYu/Wan2.2-5B-Robot \
-  --local-dir ./checkpoints/Wan2.2-5B-Libero
+  --local-dir ./checkpoints/Wan2.2-5B-Robot
 ```
 
 This downloads the full Hugging Face repository to `./checkpoints/Wan2.2-TI2V-5B`, which matches the default path used by the TI2V-5B example configs under `examples/LIBERO/`.
+`XuWuLingYu/Wan2.2-5B-Robot` is pretrained on broad robot datasets and is the recommended initialization for downstream finetuning.
 
 ## 🚀 Quick Start on LIBERO
 
@@ -53,7 +54,10 @@ See [CustomDataset example](examples/CustomDataset/README.md).
 
 - `XuWuLingYu/Wan2.2-5B-Libero`
   https://huggingface.co/XuWuLingYu/Wan2.2-5B-Libero/tree/main
-  Finetuned Wan2.2 TI2V 5B checkpoint on the full LIBERO dataset.
+  LIBERO-pretrained checkpoint trained on the full LIBERO dataset, suitable for direct LIBERO inference.
+- `XuWuLingYu/Wan2.2-5B-Robot`
+  https://huggingface.co/XuWuLingYu/Wan2.2-5B-Robot
+  Pretrained on broad robot datasets; recommended as the initialization checkpoint for finetuning on LIBERO/CustomDataset.
 
 ## 📚 Reference
 

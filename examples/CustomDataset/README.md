@@ -2,6 +2,7 @@
 
 This README documents the Wan2.2 TI2V 5B workflow for a custom dataset.
 For Wan2.1 1.3B and Wan2.1/WoW 14B examples, see `README_others.md`.
+For finetuning initialization, we recommend `XuWuLingYu/Wan2.2-5B-Robot` (https://huggingface.co/XuWuLingYu/Wan2.2-5B-Robot), which is pretrained on broad robot datasets.
 
 ## 1) Dataset layout
 
@@ -45,7 +46,7 @@ Before training, download the robot-pretrained DiT init checkpoint:
 
 ```bash
 hf download XuWuLingYu/Wan2.2-5B-Robot \
-  --local-dir ./checkpoints/Wan2.2-5B-Libero
+  --local-dir ./checkpoints/Wan2.2-5B-Robot
 ```
 
 ## 4) Train
@@ -54,10 +55,10 @@ hf download XuWuLingYu/Wan2.2-5B-Robot \
 bash scripts/train_full.sh \
   --config examples/CustomDataset/train_full_ti2v_5b.yaml \
   --dataset-base-path data/your_dataset/latent_cache_ti2v_5b \
-  --ckpt checkpoints/Wan2.2-5B-Libero/checkpoint.safetensors
+  --ckpt checkpoints/Wan2.2-5B-Robot/checkpoint.safetensors
 ```
 
-Note: `scripts/train_full.sh` now auto-applies this checkpoint by default for `examples/CustomDataset/train_full_ti2v_5b.yaml` even if `--ckpt` is omitted.
+For custom finetuning, this robot-pretrained initialization often gives better results than starting from the original Wan2.2 TI2V 5B checkpoint.
 
 ## 5) Infer
 
