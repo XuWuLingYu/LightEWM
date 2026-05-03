@@ -68,3 +68,16 @@ See [CustomDataset example](examples/CustomDataset/README.md).
 ## 📄 License
 
 Apache-2.0
+
+## 📖 Cite Us
+
+If you find LightEWM useful for your research or applications, please cite:
+
+```bibtex
+@misc{lightewm2026,
+  title = {LightEWM: Light Embodied World Model},
+  author = {Community, LightEWM},
+  year = {2026},
+  url = {https://github.com/XuWuLingYu/LightEWM}
+}
+```
