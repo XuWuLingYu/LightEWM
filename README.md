@@ -9,7 +9,7 @@ Our current focus is **Wan2.2-TI2V-5B**, including **LIBERO** preprocessing, lat
 
 - [x] Wan2.2-TI2V-5B training and inference support
 - [x] LIBERO preprocessing, training, and inference support
-- [ ] Causal video model adaptation for Wan 5B
+- [x] Causal video model adaptation for Wan 5B
 - [ ] WAM actor implementation for Wan 5B
 - [ ] CALVIN preprocessing, training, and inference support
 - [ ] Reinforcement learning on top of the world model
