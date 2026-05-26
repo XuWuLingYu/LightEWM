@@ -46,8 +46,6 @@ def list_cache_files(cache_dir: str):
 
 
 def infer_default_vae_path(latent_channels: int):
-    if latent_channels == 16:
-        return "checkpoints/Wan2.1-I2V-1.3B/Wan2.1_VAE.pth"
     if latent_channels == 48:
         return "checkpoints/Wan2.2-TI2V-5B/Wan2.2_VAE.pth"
     raise ValueError(

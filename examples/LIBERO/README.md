@@ -2,14 +2,12 @@
 
 The commands below use 49-frame clips at 10 FPS. During LIBERO conversion, videos are temporally resampled from 16 FPS to 10 FPS.
 
-For Wan2.1 1.3B and Wan2.1/WoW 14B examples, see `README_others.md`.
-
 # Libero Data Download & Process
 
 ## 1) Download LIBERO
 
 ```bash
-cd /root/to/LightEWM/
+cd LightEWM
 mkdir -p data
 cd data
 hf download \

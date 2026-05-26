@@ -202,7 +202,11 @@ def snapshot_run_configs(run_dir: Path, source_paths: list[Path], merged_cfg: di
     for idx, src in enumerate(source_paths):
         dst = configs_dir / f"{idx:02d}__{src.name}"
         shutil.copy2(src, dst)
-        mapping_lines.append(f"{src} -> {dst.name}")
+        try:
+            src_display = os.path.relpath(src, start=Path.cwd())
+        except ValueError:
+            src_display = str(src)
+        mapping_lines.append(f"{src_display} -> {dst.name}")
 
     with open(run_dir / "config_sources.txt", "w", encoding="utf-8") as f:
         f.write("\n".join(mapping_lines) + "\n")

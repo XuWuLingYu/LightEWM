@@ -18,7 +18,7 @@ class WanTI2V5BPipeline(WanVideoPipeline):
         device: Union[str, torch.device] = get_device_type(),
         model_configs: list[ModelConfig] = [],
         tokenizer_config: ModelConfig = ModelConfig(
-            model_id="Wan-AI/Wan2.1-T2V-1.3B",
+            model_id="Wan-AI/Wan2.2-TI2V-5B",
             origin_file_pattern="google/umt5-xxl/",
         ),
         audio_processor_config: ModelConfig = None,

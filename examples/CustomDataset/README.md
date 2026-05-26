@@ -1,7 +1,6 @@
 # CustomDataset Example
 
 This README documents the Wan2.2 TI2V 5B workflow for a custom dataset.
-For Wan2.1 1.3B and Wan2.1/WoW 14B examples, see `README_others.md`.
 For finetuning initialization, we recommend `XuWuLingYu/Wan2.2-5B-Robot` (https://huggingface.co/XuWuLingYu/Wan2.2-5B-Robot), which is pretrained on broad robot datasets.
 
 ## 1) Dataset layout

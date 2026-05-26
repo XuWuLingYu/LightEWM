@@ -60,7 +60,7 @@ WAN_I2V_DEFAULTS = {
     "max_timestep_boundary": 1.0,
     "min_timestep_boundary": 0.0,
     "initialize_model_on_cpu": False,
-    "wandb_enabled": False,
+    "wandb_enabled": True,
     "wandb_project": "LightEWM",
     "wandb_run_name": None,
     "wandb_mode": "online",
@@ -272,7 +272,7 @@ def build_wan_i2v_pipeline_from_params(model_params: dict, device_override=None)
         print(f"[Tokenizer] Using local tokenizer path: {local_tokenizer_path}")
     else:
         tokenizer_config = ModelConfig(
-            model_id="Wan-AI/Wan2.1-T2V-1.3B",
+            model_id="Wan-AI/Wan2.2-TI2V-5B",
             origin_file_pattern="google/umt5-xxl/",
         )
     audio_processor_config = parse_path_or_model_id(audio_processor_path)
@@ -315,9 +315,6 @@ def _should_skip_dit_overlay(model_paths):
     if not isinstance(model_paths, list) or len(model_paths) == 0:
         return False
 
-    # Our WoW base config stores DiT shards as a nested list. When `run.py --ckpt`
-    # overrides the DiT weights, model_paths[0] becomes a single checkpoint path.
-    # In that case the user expects the explicit checkpoint to be used as-is.
     return isinstance(model_paths[0], str)
 
 

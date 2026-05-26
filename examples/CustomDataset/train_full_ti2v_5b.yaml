@@ -15,11 +15,6 @@ runner:
     save_steps: 5000
     remove_prefix_in_ckpt: pipe.dit.
     use_gradient_checkpointing: true
-    wandb_enabled: true
-    wandb_project: LightEWM
-    wandb_run_name: Wan2.2-TI2V-5B
-    wandb_mode: online
-    wandb_log_every: 5
     validation_every_steps: 2000
     validation_extra_steps: [10]
     validation_num_samples: 1

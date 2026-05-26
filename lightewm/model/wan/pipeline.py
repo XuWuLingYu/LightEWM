@@ -56,7 +56,7 @@ class WanVideoPipeline(BasePipeline):
         device: Union[str, torch.device] = get_device_type(),
         model_configs: list[ModelConfig] = [],
         tokenizer_config: ModelConfig = ModelConfig(
-            model_id="Wan-AI/Wan2.1-T2V-1.3B",
+            model_id="Wan-AI/Wan2.2-TI2V-5B",
             origin_file_pattern="google/umt5-xxl/",
         ),
         audio_processor_config: ModelConfig = None,
@@ -69,14 +69,6 @@ class WanVideoPipeline(BasePipeline):
                 "models_t5_umt5-xxl-enc-bf16.pth": (
                     "DiffSynth-Studio/Wan-Series-Converted-Safetensors",
                     "models_t5_umt5-xxl-enc-bf16.safetensors",
-                ),
-                "models_clip_open-clip-xlm-roberta-large-vit-huge-14.pth": (
-                    "DiffSynth-Studio/Wan-Series-Converted-Safetensors",
-                    "models_clip_open-clip-xlm-roberta-large-vit-huge-14.safetensors",
-                ),
-                "Wan2.1_VAE.pth": (
-                    "DiffSynth-Studio/Wan-Series-Converted-Safetensors",
-                    "Wan2.1_VAE.safetensors",
                 ),
                 "Wan2.2_VAE.pth": (
                     "DiffSynth-Studio/Wan-Series-Converted-Safetensors",
@@ -101,7 +93,7 @@ class WanVideoPipeline(BasePipeline):
                     model_config.origin_file_pattern = redirect_dict[model_config.origin_file_pattern][1]
 
         if use_usp:
-            raise RuntimeError("Unified sequence parallel is not supported in Wan 1.3B I2V minimal pipeline.")
+            raise RuntimeError("Unified sequence parallel is not supported in the Wan2.2-TI2V-5B pipeline.")
         if audio_processor_config is not None:
             print("[WanI2V] audio_processor_config is ignored in the minimal I2V pipeline.")
 

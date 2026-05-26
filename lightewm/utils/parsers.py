@@ -24,7 +24,7 @@ def add_video_size_config(parser: argparse.ArgumentParser):
 
 def add_model_config(parser: argparse.ArgumentParser):
     parser.add_argument("--model_paths", type=str, default=None, help="Paths to load models. In JSON format.")
-    parser.add_argument("--model_id_with_origin_paths", type=str, default=None, help="Model ID with origin paths, e.g., Wan-AI/Wan2.1-T2V-1.3B:diffusion_pytorch_model*.safetensors. Comma-separated.")
+    parser.add_argument("--model_id_with_origin_paths", type=str, default=None, help="Model ID with origin paths, e.g., Wan-AI/Wan2.2-TI2V-5B:diffusion_pytorch_model*.safetensors. Comma-separated.")
     parser.add_argument("--extra_inputs", default=None, help="Additional model inputs, comma-separated.")
     parser.add_argument("--fp8_models", default=None, help="Models with FP8 precision, comma-separated.")
     parser.add_argument("--offload_models", default=None, help="Models with offload, comma-separated. Only used in splited training.")
@@ -123,7 +123,7 @@ def build_wan_i2v_parser():
     )
     parser.add_argument("--tokenizer_path", type=str, default=None, help="Path to tokenizer.")
     parser.add_argument("--audio_processor_path", type=str, default=None, help="Path to the audio processor. If provided, the processor will be used for Wan2.2-S2V model.")
-    parser.add_argument("--max_timestep_boundary", type=float, default=1.0, help="Max timestep boundary (for mixed models, e.g., Wan-AI/Wan2.2-I2V-A14B).")
-    parser.add_argument("--min_timestep_boundary", type=float, default=0.0, help="Min timestep boundary (for mixed models, e.g., Wan-AI/Wan2.2-I2V-A14B).")
+    parser.add_argument("--max_timestep_boundary", type=float, default=1.0, help="Max timestep boundary for Wan2.2-TI2V-5B.")
+    parser.add_argument("--min_timestep_boundary", type=float, default=0.0, help="Min timestep boundary for Wan2.2-TI2V-5B.")
     parser.add_argument("--initialize_model_on_cpu", default=False, action="store_true", help="Whether to initialize models on CPU.")
     return parser

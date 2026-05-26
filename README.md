@@ -9,7 +9,6 @@ Our current focus is **Wan2.2-TI2V-5B**, including **LIBERO** preprocessing, lat
 
 - [x] Wan2.2-TI2V-5B training and inference support
 - [x] LIBERO preprocessing, training, and inference support
-- [ ] IDM support for video-to-action learning
 - [ ] Causal video model adaptation for Wan 5B
 - [ ] WAM actor implementation for Wan 5B
 - [ ] CALVIN preprocessing, training, and inference support
@@ -63,7 +62,6 @@ See [CustomDataset example](examples/CustomDataset/README.md).
 
 - DiffSynth-Studio: <https://github.com/modelscope/DiffSynth-Studio>
 - Wan documentation: <https://diffsynth-studio-doc.readthedocs.io/en/latest/Model_Details/Wan.html>
-- WoW World Model: <https://wow-world-model.github.io/>
 
 ## 📄 License
 
