@@ -1,0 +1,32 @@
+task: train
+
+runner:
+  class_path: lightewm.runner.causal_forcing.CausalForcingRunner
+  params:
+    output_path: ./logs/train/CustomDataset-HDR
+    backend_root: ../HiDiT/Causal-Forcing
+    official_config_path: ../HiDiT/Causal-Forcing/configs/maze_recursive_7_11_17_26_40_50_all_condition_push_v4.yaml
+    model_root: checkpoints
+    no_visualize: true
+    causal_config_overrides:
+      wandb_project: LightEWM-CustomDataset-HDR
+      height: 480
+      width: 832
+      num_frames: 49
+      num_workers: 8
+      variable_num_frames_train: false
+      max_training_video_frames: 49
+      vertical_leaf_frames: 13
+      vertical_level_sizes: [1, 2, 4, 8, 13]
+      vertical_step_budgets: [7, 11, 18, 31, 50]
+      model_kwargs:
+        timestep_shift: 1.0
+        seq_len: 10920
+
+dataset:
+  class_path: lightewm.dataset.causal_forcing.CausalForcingJsonlAdapter
+  params:
+    base_path: data/your_dataset
+    metadata_path: data/your_dataset/metadata.csv
+    video_key: video
+    prompt_key: prompt
