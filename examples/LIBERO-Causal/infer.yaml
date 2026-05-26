@@ -1,0 +1,29 @@
+task: infer
+
+runner:
+  class_path: lightewm.runner.causal_forcing.CausalForcingRunner
+  params:
+    output_dir: ./outputs/LIBERO-Causal
+    backend_root: ../HiDiT/Causal-Forcing
+    official_config_path: ../HiDiT/Causal-Forcing/configs/ar_diffusion_tf_framewise_wan22_ti2v_5b_maze.yaml
+    model_root: checkpoints
+    checkpoint_path: null
+    seed: 0
+    num_output_frames: 13
+    causal_config_overrides:
+      height: 224
+      width: 224
+      num_frames: 49
+      variable_num_frames_infer: false
+      model_kwargs:
+        timestep_shift: 5.0
+        seq_len: 1029
+
+dataset:
+  class_path: lightewm.dataset.causal_forcing.CausalForcingJsonlAdapter
+  params:
+    base_path: data/libero_i2v_train
+    metadata_path: data/libero_i2v_train/metadata_dense_prompt.csv
+    video_key: video
+    prompt_key: prompt
+    fallback_prompt_keys: [dense_prompt, sparse_prompt]
