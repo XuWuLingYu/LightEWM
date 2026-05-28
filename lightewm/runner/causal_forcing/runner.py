@@ -105,7 +105,7 @@ class CausalForcingRunner:
         env["PYTHONPATH"] = os.pathsep.join(pythonpath)
         return env
 
-    def _run_train(self, backend_root: Path, config_path: Path, run_root: Path) -> int:
+    def _launch_cmd(self, backend_root: Path, default_master_port: int) -> list[str]:
         params = self._runner_params()
         launch_cmd = [self._python_for_backend(backend_root)]
         num_processes = int(params.get("num_processes", 1))
@@ -116,8 +116,13 @@ class CausalForcingRunner:
                 "--nproc_per_node",
                 str(num_processes),
                 "--master_port",
-                str(params.get("master_port", 29577)),
+                str(params.get("master_port", default_master_port)),
             ])
+        return launch_cmd
+
+    def _run_train(self, backend_root: Path, config_path: Path, run_root: Path) -> int:
+        params = self._runner_params()
+        launch_cmd = self._launch_cmd(backend_root, default_master_port=29577)
         cmd = launch_cmd + [
             "train.py",
             "--config_path",
@@ -140,8 +145,10 @@ class CausalForcingRunner:
 
     def _run_infer(self, backend_root: Path, config_path: Path, run_root: Path, jsonl_path: Path) -> int:
         params = self._runner_params()
-        cmd = [
-            self._python_for_backend(backend_root),
+        num_processes = int(params.get("num_processes", 1))
+        if num_processes > 1 and params.get("i2v", False):
+            raise ValueError("Causal-Forcing I2V inference does not support distributed launch.")
+        cmd = self._launch_cmd(backend_root, default_master_port=29578) + [
             "inference.py",
             "--config_path",
             self._relative_to_backend(config_path, backend_root),
@@ -163,6 +170,18 @@ class CausalForcingRunner:
             cmd.append("--detail-log")
         if int(params.get("sampling_steps", 0)) > 0:
             cmd.extend(["--sampling_steps", str(params["sampling_steps"])])
+        if int(params.get("vertical_infer_fixed_denoise_steps", -1)) >= 0:
+            cmd.extend([
+                "--vertical_infer_fixed_denoise_steps",
+                str(params["vertical_infer_fixed_denoise_steps"]),
+            ])
+        if params.get("vertical_infer_preserve_budget_ratio", False):
+            cmd.append("--vertical_infer_preserve_budget_ratio")
+        if int(params.get("vertical_infer_reference_total_steps", 0)) > 0:
+            cmd.extend([
+                "--vertical_infer_reference_total_steps",
+                str(params["vertical_infer_reference_total_steps"]),
+            ])
         print("[CausalForcing] Running:", " ".join(cmd))
         return subprocess.run(cmd, cwd=str(backend_root), env=self._base_env(backend_root), check=True).returncode
 

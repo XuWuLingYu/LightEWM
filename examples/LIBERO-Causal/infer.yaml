@@ -8,6 +8,8 @@ runner:
     official_config_path: ../HiDiT/Causal-Forcing/configs/ar_diffusion_tf_framewise_wan22_ti2v_5b_maze.yaml
     model_root: checkpoints
     checkpoint_path: null
+    num_processes: 8
+    master_port: 29578
     seed: 0
     num_output_frames: 13
     causal_config_overrides:
