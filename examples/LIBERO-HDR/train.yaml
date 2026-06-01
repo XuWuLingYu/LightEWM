@@ -12,8 +12,12 @@ runner:
     no_visualize: true
     causal_config_overrides:
       wandb_project: LightEWM-LIBERO-HDR
-      height: 480
-      width: 832
+      train_timer: true
+      train_timer_first_steps: 5
+      train_timer_interval: 10
+      train_timer_sync_cuda: true
+      height: 224
+      width: 224
       num_frames: 49
       num_workers: 8
       variable_num_frames_train: false
@@ -23,7 +27,7 @@ runner:
       vertical_step_budgets: [7, 11, 18, 31, 50]
       model_kwargs:
         timestep_shift: 1.0
-        seq_len: 10920
+        seq_len: 1372
 
 dataset:
   class_path: lightewm.dataset.causal_forcing.CausalForcingJsonlAdapter

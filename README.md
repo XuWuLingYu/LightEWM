@@ -47,6 +47,7 @@ This downloads the full Hugging Face repository to `./checkpoints/Wan2.2-TI2V-5B
 ## 🚀 Quick Start on LIBERO
 
 See [LIBERO example](examples/LIBERO/README.md).
+For causal world-model training and inference, see [LIBERO-Causal example](examples/LIBERO-Causal/README.md).
 
 ## 📦 Run on Custom Dataset
 
@@ -57,6 +58,9 @@ See [CustomDataset example](examples/CustomDataset/README.md).
 - `XuWuLingYu/Wan2.2-5B-Libero`
   https://huggingface.co/XuWuLingYu/Wan2.2-5B-Libero/tree/main
   LIBERO-pretrained checkpoint trained on the full LIBERO dataset, suitable for direct LIBERO inference.
+- `XuWuLingYu/LIBERO-Causal-Wan2.2-5BTI2V`
+  https://huggingface.co/XuWuLingYu/LIBERO-Causal-Wan2.2-5BTI2V
+  LIBERO-Causal checkpoint adapted from Wan2.2-TI2V-5B for causal robot video generation and direct LIBERO-Causal inference.
 - `XuWuLingYu/Wan2.2-5B-Robot`
   https://huggingface.co/XuWuLingYu/Wan2.2-5B-Robot
   Pretrained on broad robot datasets; recommended as the initialization checkpoint for finetuning on LIBERO/CustomDataset.
