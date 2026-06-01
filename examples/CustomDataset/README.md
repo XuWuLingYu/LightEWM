@@ -17,8 +17,6 @@ data/your_dataset/
 Minimum `metadata.csv` columns:
 - `video`
 - `prompt`
-
-Recommended optional column:
 - `num_frames`
 
 ## 2) Optional: generate dense prompts
