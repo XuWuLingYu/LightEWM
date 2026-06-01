@@ -2,8 +2,11 @@
 
 # LightEWM
 
-**LightEWM: Light Embodied World Model** is an open-source training and inference framework for embodied world models.
-Our current focus is **Wan2.2-TI2V-5B**, including **LIBERO** preprocessing, latent-cache generation, full training, and inference.
+**LightEWM: Light Embodied World Model** is a lightweight, hackable training and inference codebase for embodied world models. It covers both **bidirectional** video diffusion workflows and **causal** world-modeling workflows, with examples for LIBERO and custom robot datasets.
+
+The project is designed to be easy to modify: datasets, model backends, training configs, and inference entrypoints are kept small and explicit. For custom data, LightEWM provides a simple CSV-based interface so users can start training from lightweight metadata without building a complex dataset pipeline.
+
+We also provide multiple pretrained checkpoints for fast post-training and downstream adaptation, including robot-pretrained initialization weights and LIBERO-finetuned models. The current main model family is **Wan2.2-TI2V-5B**, with support for LIBERO preprocessing, latent-cache generation, full training, and inference.
 
 ## 🧭 Roadmap
 

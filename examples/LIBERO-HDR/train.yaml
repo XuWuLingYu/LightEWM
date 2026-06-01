@@ -7,6 +7,8 @@ runner:
     backend_root: ../HiDiT/Causal-Forcing
     official_config_path: ../HiDiT/Causal-Forcing/configs/maze_recursive_7_11_17_26_40_50_all_condition_push_v4.yaml
     model_root: checkpoints
+    num_processes: 8
+    master_port: 29584
     no_visualize: true
     causal_config_overrides:
       wandb_project: LightEWM-LIBERO-HDR

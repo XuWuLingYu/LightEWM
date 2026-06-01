@@ -105,11 +105,16 @@ class CausalForcingRunner:
         env["PYTHONPATH"] = os.pathsep.join(pythonpath)
         return env
 
-    def _launch_cmd(self, backend_root: Path, default_master_port: int) -> list[str]:
+    def _launch_cmd(
+        self,
+        backend_root: Path,
+        default_master_port: int,
+        force_distributed: bool = False,
+    ) -> list[str]:
         params = self._runner_params()
         launch_cmd = [self._python_for_backend(backend_root)]
         num_processes = int(params.get("num_processes", 1))
-        if num_processes > 1:
+        if force_distributed or num_processes > 1:
             launch_cmd.extend([
                 "-m",
                 "torch.distributed.run",
@@ -122,7 +127,11 @@ class CausalForcingRunner:
 
     def _run_train(self, backend_root: Path, config_path: Path, run_root: Path) -> int:
         params = self._runner_params()
-        launch_cmd = self._launch_cmd(backend_root, default_master_port=29577)
+        launch_cmd = self._launch_cmd(
+            backend_root,
+            default_master_port=29577,
+            force_distributed=True,
+        )
         cmd = launch_cmd + [
             "train.py",
             "--config_path",

@@ -7,6 +7,8 @@ runner:
     backend_root: ../HiDiT/Causal-Forcing
     official_config_path: ../HiDiT/Causal-Forcing/configs/ar_diffusion_tf_framewise_wan22_ti2v_5b_maze.yaml
     model_root: checkpoints
+    num_processes: 8
+    master_port: 29582
     no_visualize: true
     causal_config_overrides:
       wandb_project: LightEWM-CustomDataset-Causal
