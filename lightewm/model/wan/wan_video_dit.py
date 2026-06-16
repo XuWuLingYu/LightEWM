@@ -14,7 +14,7 @@ except ModuleNotFoundError:
 
 try:
     import flash_attn
-    FLASH_ATTN_2_AVAILABLE = True
+    FLASH_ATTN_2_AVAILABLE = hasattr(flash_attn, "flash_attn_func")
 except ModuleNotFoundError:
     FLASH_ATTN_2_AVAILABLE = False
 

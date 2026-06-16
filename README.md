@@ -48,6 +48,7 @@ This downloads the full Hugging Face repository to `./checkpoints/Wan2.2-TI2V-5B
 
 See [LIBERO example](examples/LIBERO/README.md).
 For causal world-model training and inference, see [LIBERO-Causal example](examples/LIBERO-Causal/README.md).
+For FVD/SSIM/LPIPS checkpoint comparison and smoke checks, see [video quality evaluation](docs/evaluation.md).
 
 ## 📦 Run on Custom Dataset
 
