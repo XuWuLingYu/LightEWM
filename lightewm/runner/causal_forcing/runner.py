@@ -11,7 +11,10 @@ from .config_adapter import adapt_official_config
 
 
 class CausalForcingRunner:
-    """LightEWM adapter for the external Causal-Forcing backend."""
+    """LightEWM adapter for the vendored Causal-Forcing backend."""
+
+    DEFAULT_BACKEND_ROOT = Path("lightewm/vendor/causal_forcing")
+    DEFAULT_CONFIG_PATH = DEFAULT_BACKEND_ROOT / "configs/ar_diffusion_tf_framewise_wan22_ti2v_5b_maze.yaml"
 
     def __init__(self, config):
         self.config = config
@@ -77,14 +80,21 @@ class CausalForcingRunner:
 
     def _prepare_config(self, run_root: Path, jsonl_path: Path, backend_root: Path) -> Path:
         params = self._runner_params()
-        official_config_path = params["official_config_path"]
+        official_config_path = params.get("official_config_path", str(self.DEFAULT_CONFIG_PATH))
         output_path = run_root / "causal_forcing_config.yaml"
+        output_overrides = dict(params.get("causal_config_overrides", {}))
+        for checkpoint_key in ("generator_ckpt", "action_dit_ckpt"):
+            if checkpoint_key in output_overrides and output_overrides[checkpoint_key]:
+                output_overrides[checkpoint_key] = self._relative_to_backend(
+                    output_overrides[checkpoint_key],
+                    backend_root,
+                )
         adapt_official_config(
             official_config_path=official_config_path,
             output_config_path=str(output_path),
             data_path=self._relative_to_backend(jsonl_path, backend_root),
             model_root=self._relative_to_backend(params.get("model_root", "checkpoints"), backend_root),
-            output_overrides=params.get("causal_config_overrides", {}),
+            output_overrides=output_overrides,
             dot_overrides=params.get("causal_config_dot_overrides", {}),
         )
         print(f"[CausalForcing] Wrote adapted config to {output_path}")
@@ -172,7 +182,7 @@ class CausalForcingRunner:
         ]
         checkpoint_path = params.get("checkpoint_path")
         if checkpoint_path:
-            cmd.extend(["--checkpoint_path", checkpoint_path])
+            cmd.extend(["--checkpoint_path", self._relative_to_backend(checkpoint_path, backend_root)])
         if params.get("use_ema", False):
             cmd.append("--use_ema")
         if params.get("detail_log", False):
@@ -196,7 +206,7 @@ class CausalForcingRunner:
 
     def run(self):
         params = self._runner_params()
-        backend_root = Path(params.get("backend_root", "../HiDiT/Causal-Forcing"))
+        backend_root = Path(params.get("backend_root", str(self.DEFAULT_BACKEND_ROOT)))
         if not (backend_root / "train.py").exists():
             raise FileNotFoundError(f"Causal-Forcing backend not found: {backend_root}")
 

@@ -1,6 +1,6 @@
 # LIBERO Causal Example
 
-This example adapts LIBERO metadata to the Causal-Forcing AR diffusion backend.
+This example adapts LIBERO metadata to the vendored Causal-Forcing AR diffusion backend under `lightewm/vendor/causal_forcing`.
 
 Prepare `data/libero_i2v_train/metadata_dense_prompt.csv` with the regular LIBERO workflow, then run:
 
