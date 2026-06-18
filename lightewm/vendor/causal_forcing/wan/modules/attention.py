@@ -15,7 +15,7 @@ except ModuleNotFoundError:
 
 try:
     import flash_attn
-    FLASH_ATTN_2_AVAILABLE = True
+    FLASH_ATTN_2_AVAILABLE = hasattr(flash_attn, "flash_attn_varlen_func")
 except ModuleNotFoundError:
     FLASH_ATTN_2_AVAILABLE = False
 
@@ -66,6 +66,20 @@ def flash_attention(
 
     def half(x):
         return x if x.dtype in half_dtypes else x.to(dtype)
+
+    if not FLASH_ATTN_2_AVAILABLE and not FLASH_ATTN_3_AVAILABLE:
+        if q_lens is not None or k_lens is not None:
+            warnings.warn(
+                'Padding mask is disabled when using scaled_dot_product_attention. It can have a significant impact on performance.'
+            )
+        if q_scale is not None:
+            q = q * q_scale
+        q = q.transpose(1, 2).to(dtype)
+        k = k.transpose(1, 2).to(dtype)
+        v = v.transpose(1, 2).to(dtype)
+        x = torch.nn.functional.scaled_dot_product_attention(
+            q, k, v, attn_mask=None, is_causal=causal, dropout_p=dropout_p, scale=softmax_scale)
+        return x.transpose(1, 2).contiguous().type(out_dtype)
 
     # preprocess query
     if q_lens is None:

@@ -5,10 +5,10 @@ import os
 from omegaconf import OmegaConf
 from tqdm import tqdm
 from torchvision import transforms
-from torchvision.io import write_video
 from einops import rearrange
 import torch.distributed as dist
 from torch.utils.data import DataLoader, Sampler, SequentialSampler
+import imageio.v3 as iio
 
 from pipeline import (
     CausalDiffusionInferencePipeline,
@@ -18,6 +18,12 @@ from utils.dataset import TextDataset, TextImagePairDataset, TextVideoDataset
 from utils.misc import set_seed
 
 from demo_utils.memory import gpu, get_cuda_free_memory_gb, DynamicSwapInstaller
+
+
+def write_video(path, video, fps=16):
+    """Write uint8 THWC video without relying on torchvision.io.write_video."""
+    array = video.detach().cpu().numpy() if torch.is_tensor(video) else video
+    iio.imwrite(path, array, fps=fps)
 
 parser = argparse.ArgumentParser()
 parser.add_argument("--config_path", type=str, help="Path to the config file")
