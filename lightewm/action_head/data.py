@@ -52,6 +52,7 @@ class LiberoActionDataset(Dataset):
         image_key: str = "agentview_rgb",
         proprio_key: str = "robot_states",
         sample_stride: int = 1,
+        action_target_shift: int = 0,
         task_to_id: dict[str, int] | None = None,
     ) -> None:
         self.manifest_path = Path(manifest_path)
@@ -59,13 +60,15 @@ class LiberoActionDataset(Dataset):
         self.image_key = image_key
         self.proprio_key = proprio_key
         self.sample_stride = max(1, int(sample_stride))
+        self.action_target_shift = max(0, int(action_target_shift))
         self.task_to_id = task_to_id or build_task_vocab(self.specs)
         self.index: list[tuple[int, int]] = []
         for spec_idx, spec in enumerate(self.specs):
             with h5py.File(spec.hdf5_path, "r") as f:
                 demo = f[f"data/{spec.demo_id}"]
                 length = int(demo["actions"].shape[0])
-            self.index.extend((spec_idx, t) for t in range(0, length, self.sample_stride))
+            max_step = max(0, length - self.action_target_shift)
+            self.index.extend((spec_idx, t) for t in range(0, max_step, self.sample_stride))
         if not self.index:
             raise ValueError(f"No action frames indexed from {manifest_path}")
 
@@ -84,7 +87,7 @@ class LiberoActionDataset(Dataset):
                 proprio = np.asarray(demo[self.proprio_key][step], dtype=np.float32)
             else:
                 proprio = np.asarray(demo["obs"][self.proprio_key][step], dtype=np.float32)
-            action = np.asarray(demo["actions"][step], dtype=np.float32)
+            action = np.asarray(demo["actions"][step + self.action_target_shift], dtype=np.float32)
         return image, proprio, action
 
     def __getitem__(self, idx: int) -> dict[str, torch.Tensor]:

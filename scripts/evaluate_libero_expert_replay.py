@@ -19,6 +19,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--output-dir", required=True)
     parser.add_argument("--max-demos", type=int, default=50)
     parser.add_argument("--init-source", choices=("official", "hdf5"), default="official")
+    parser.add_argument("--action-shift", type=int, default=0)
+    parser.add_argument("--retries", type=int, default=1)
     parser.add_argument("--camera-height", type=int, default=128)
     parser.add_argument("--camera-width", type=int, default=128)
     return parser.parse_args()
@@ -60,14 +62,21 @@ def main() -> None:
                     init_state = official_init_states[demo_idx % len(official_init_states)]
                 else:
                     init_state = hdf5_states[0]
-                env.reset()
-                env.set_init_state(init_state)
                 success = False
                 step_count = 0
-                for step_count, action in enumerate(actions, start=1):
-                    _, _, done, _ = env.step(action)
-                    if done:
-                        success = True
+                replay_actions = actions[max(0, args.action_shift):]
+                attempts = max(1, int(args.retries))
+                for attempt in range(attempts):
+                    env.reset()
+                    env.set_init_state(init_state)
+                    step_count = 0
+                    for step_count, action in enumerate(replay_actions, start=1):
+                        _, _, done, _ = env.step(action)
+                        if done:
+                            success = True
+                            break
+                    success = bool(success or env.check_success())
+                    if success:
                         break
                 final_success = bool(env.check_success())
                 rows.append(
@@ -78,6 +87,8 @@ def main() -> None:
                         "final_success": int(final_success),
                         "steps": step_count,
                         "num_actions": len(actions),
+                        "action_shift": max(0, args.action_shift),
+                        "attempts": attempt + 1,
                     }
                 )
                 print(f"[ExpertReplay] {demo_id} success={rows[-1]['success']} steps={step_count}", flush=True)
@@ -94,6 +105,8 @@ def main() -> None:
         "suite": args.suite,
         "task": args.task,
         "init_source": args.init_source,
+        "action_shift": max(0, args.action_shift),
+        "retries": max(1, int(args.retries)),
         "num_demos": len(rows),
         "success_rate": success_rate,
         "results_csv": str(csv_path),

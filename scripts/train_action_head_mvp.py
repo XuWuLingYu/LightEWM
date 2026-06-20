@@ -21,6 +21,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--batch-size", type=int, default=128)
     parser.add_argument("--lr", type=float, default=1e-3)
     parser.add_argument("--sample-stride", type=int, default=1)
+    parser.add_argument("--action-target-shift", type=int, default=0)
     parser.add_argument("--num-workers", type=int, default=2)
     parser.add_argument("--val-fraction", type=float, default=0.1)
     parser.add_argument("--seed", type=int, default=0)
@@ -39,7 +40,11 @@ def seed_everything(seed: int) -> None:
 def main() -> None:
     args = parse_args()
     seed_everything(args.seed)
-    dataset = LiberoActionDataset(args.manifest, sample_stride=args.sample_stride)
+    dataset = LiberoActionDataset(
+        args.manifest,
+        sample_stride=args.sample_stride,
+        action_target_shift=args.action_target_shift,
+    )
     first = dataset[0]
     model = ActionHeadMVP(
         num_tasks=dataset.num_tasks,
@@ -119,6 +124,7 @@ def main() -> None:
         "action_dim": model.action_dim,
         "manifest": str(Path(args.manifest).resolve()),
         "history": history,
+        "action_target_shift": args.action_target_shift,
     }
     ckpt_path = output_dir / "action_head_mvp.pt"
     torch.save(ckpt, ckpt_path)
@@ -130,6 +136,7 @@ def main() -> None:
                 "num_frames": len(dataset),
                 "train_frames": train_size,
                 "val_frames": val_size,
+                "action_target_shift": args.action_target_shift,
             },
             f,
             indent=2,

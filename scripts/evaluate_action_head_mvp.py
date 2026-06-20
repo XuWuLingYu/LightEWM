@@ -8,6 +8,7 @@ import os
 from pathlib import Path
 
 import imageio.v3 as iio
+import h5py
 import numpy as np
 import torch
 
@@ -26,16 +27,18 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--camera-height", type=int, default=128)
     parser.add_argument("--camera-width", type=int, default=128)
     parser.add_argument("--save-videos", type=int, default=3)
+    parser.add_argument("--init-source", choices=("official", "hdf5"), default="official")
+    parser.add_argument("--data-root", default="/pfs-verdent/zhangyu/robot-trial/data/LIBERO-datasets")
     parser.add_argument("--seed", type=int, default=0)
     parser.add_argument("--device", default="cuda" if torch.cuda.is_available() else "cpu")
     return parser.parse_args()
 
 
 def env_proprio(obs: dict) -> np.ndarray:
+    gripper = np.asarray(obs["robot0_gripper_qpos"], dtype=np.float32)
     eef_pos = np.asarray(obs["robot0_eef_pos"], dtype=np.float32)
     eef_quat = np.asarray(obs["robot0_eef_quat"], dtype=np.float32)
-    gripper = np.asarray(obs["robot0_gripper_qpos"], dtype=np.float32)
-    return np.concatenate([eef_pos, eef_quat, gripper], axis=0)
+    return np.concatenate([gripper, eef_pos, eef_quat], axis=0)
 
 
 def model_action(model: ActionHeadMVP, obs: dict, task_id: int, device: str) -> np.ndarray:
@@ -79,6 +82,12 @@ def main() -> None:
     task_idx = task_names.index(task_name)
     task = bench.get_task(task_idx)
     init_states = bench.get_task_init_states(task_idx)
+    hdf5_states = None
+    if args.init_source == "hdf5":
+        hdf5_path = Path(args.data_root) / suite / f"{task_name}_demo.hdf5"
+        with h5py.File(hdf5_path, "r") as f:
+            demo_ids = sorted(f["data"].keys(), key=lambda x: int(x.split("_")[-1]))
+            hdf5_states = [np.asarray(f[f"data/{demo_id}/states"][0]) for demo_id in demo_ids]
     env = OffScreenRenderEnv(
         bddl_file_name=bench.get_task_bddl_file_path(task_idx),
         camera_heights=args.camera_height,
@@ -95,7 +104,10 @@ def main() -> None:
     try:
         for case_id in range(args.num_cases):
             env.reset()
-            init_state = init_states[case_id % len(init_states)]
+            if hdf5_states is not None:
+                init_state = hdf5_states[case_id % len(hdf5_states)]
+            else:
+                init_state = init_states[case_id % len(init_states)]
             obs = env.set_init_state(init_state)
             for _ in range(args.warmup_steps):
                 obs, _, _, _ = env.step(np.zeros(7, dtype=np.float32))
@@ -123,6 +135,7 @@ def main() -> None:
                     "success": int(done),
                     "steps": step + 1,
                     "total_reward": total_reward,
+                    "init_source": args.init_source,
                 }
             )
             print(f"[Eval] case={case_id} success={int(done)} steps={step + 1}", flush=True)
@@ -141,6 +154,7 @@ def main() -> None:
         "num_cases": len(rows),
         "success_rate": success_rate,
         "mean_steps": float(np.mean([row["steps"] for row in rows])),
+        "init_source": args.init_source,
         "results_csv": str(results_csv),
         "video_dir": str(video_dir),
     }
