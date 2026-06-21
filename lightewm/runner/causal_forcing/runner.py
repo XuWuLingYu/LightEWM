@@ -5,6 +5,7 @@ import subprocess
 import sys
 from pathlib import Path
 
+from lightewm.runner.backend_result import BackendRunResult
 from lightewm.runner.runner_util.instantiation import instantiate_component_from_section
 
 from .config_adapter import adapt_official_config
@@ -103,7 +104,8 @@ class CausalForcingRunner:
     def _base_env(self, backend_root: Path) -> dict:
         params = self._runner_params()
         env = os.environ.copy()
-        pythonpath = ["."]
+        backend_abs = str(self._repo_path(backend_root).resolve())
+        pythonpath = [backend_abs, "."]
         local_pythonpath = params.get("pythonpath", ["data/python-packages"])
         if isinstance(local_pythonpath, str):
             local_pythonpath = [local_pythonpath]
@@ -216,5 +218,34 @@ class CausalForcingRunner:
         config_path = self._prepare_config(run_root, jsonl_path, backend_root)
 
         if self._task() == "infer":
-            return self._run_infer(backend_root, config_path, run_root, jsonl_path)
-        return self._run_train(backend_root, config_path, run_root)
+            self._run_infer(backend_root, config_path, run_root, jsonl_path)
+        else:
+            self._run_train(backend_root, config_path, run_root)
+
+        dataset_params = {}
+        full_config = self._full_config()
+        if hasattr(full_config, "dataset") and hasattr(full_config.dataset, "params"):
+            dataset_params = (
+                full_config.dataset.params.to_dict()
+                if hasattr(full_config.dataset.params, "to_dict")
+                else dict(full_config.dataset.params)
+            )
+        causal_overrides = params.get("causal_config_overrides", {}) or {}
+        result = BackendRunResult(
+            backend="causal_forcing",
+            task=self._task(),
+            generated_dir=str(run_root),
+            artifact_type="video" if self._task() == "infer" else "training_log",
+            metadata_path=dataset_params.get("metadata_path"),
+            dataset_base_path=dataset_params.get("base_path"),
+            fps=params.get("fps"),
+            num_frames=causal_overrides.get("num_frames"),
+            extra={
+                "backend_root": str(backend_root),
+                "config_path": str(config_path),
+                "jsonl_path": str(jsonl_path),
+            },
+        )
+        manifest_path = result.write_manifest(run_root)
+        print(f"[CausalForcing] Wrote backend manifest to {manifest_path}")
+        return result

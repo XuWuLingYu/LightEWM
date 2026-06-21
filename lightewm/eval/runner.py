@@ -13,6 +13,7 @@ from pathlib import Path
 import yaml
 
 from lightewm.eval import evaluate_video_quality
+from lightewm.runner.backend_result import read_backend_manifest
 
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
@@ -177,6 +178,9 @@ def append_summary(summary_csv: Path, summary: dict):
         "lpips",
         "fvd_backend",
         "generated_dir",
+        "backend",
+        "artifact_type",
+        "backend_manifest",
     ]
     exists = summary_csv.exists()
     row = {
@@ -189,6 +193,9 @@ def append_summary(summary_csv: Path, summary: dict):
         "lpips": summary["metrics"].get("lpips"),
         "fvd_backend": summary.get("metric_config", {}).get("fvd_backend"),
         "generated_dir": summary["generated_dir"],
+        "backend": summary.get("backend"),
+        "artifact_type": summary.get("artifact_type"),
+        "backend_manifest": summary.get("backend_manifest"),
     }
     with open(summary_csv, "a", newline="", encoding="utf-8") as f:
         writer = csv.DictWriter(f, fieldnames=fieldnames)
@@ -209,6 +216,12 @@ def parse_args():
     parser.add_argument("--output-root", default=None)
     parser.add_argument("--weight", action="append", type=parse_weight_spec, default=[])
     parser.add_argument("--generated-dir", action="append", default=[], help="Metrics-only mapping NAME=PATH.")
+    parser.add_argument(
+        "--backend-manifest",
+        action="append",
+        default=[],
+        help="Backend manifest path, or NAME=PATH. When provided without --weight, manifests define the evaluated runs.",
+    )
     parser.add_argument("--skip-inference", action="store_true")
     parser.add_argument("--max-samples", type=int, default=16)
     parser.add_argument("--infer-steps", type=int, default=50)
@@ -240,6 +253,23 @@ def parse_generated_dirs(items: list[str]) -> dict[str, Path]:
     return result
 
 
+def parse_backend_manifests(items: list[str]) -> dict[str, tuple[Path, object]]:
+    result = {}
+    for item in items:
+        explicit_name = None
+        manifest_text = item
+        if "=" in item:
+            explicit_name, manifest_text = item.split("=", 1)
+            explicit_name = explicit_name.strip()
+        manifest_path = Path(manifest_text)
+        manifest = read_backend_manifest(manifest_path)
+        name = explicit_name or manifest.extra.get("weight_name") or manifest.backend
+        if not name:
+            raise ValueError(f"Cannot derive run name from backend manifest: {manifest_path}")
+        result[str(name)] = (manifest_path, manifest)
+    return result
+
+
 def main():
     args = parse_args()
     os.chdir(REPO_ROOT)
@@ -252,11 +282,16 @@ def main():
     if args.base_model_dir is None:
         args.base_model_dir = str(asset_root / "checkpoints/Wan2.2-TI2V-5B")
 
-    require_path(args.config, "Inference config")
-    require_path(args.dataset_base_path, "Dataset base path")
-    require_path(args.metadata_path, "Metadata path")
+    backend_manifests = parse_backend_manifests(args.backend_manifest)
 
-    weights = args.weight if args.weight else default_weight_specs(args.asset_root)
+    require_path(args.config, "Inference config")
+    if not backend_manifests:
+        require_path(args.dataset_base_path, "Dataset base path")
+        require_path(args.metadata_path, "Metadata path")
+
+    weights = args.weight if args.weight else [
+        WeightSpec(name, None) for name in backend_manifests
+    ] if backend_manifests else default_weight_specs(args.asset_root)
     output_root = Path(args.output_root) if args.output_root else default_output_root()
     output_root.mkdir(parents=True, exist_ok=True)
     summary_csv = output_root / "summary.csv"
@@ -273,20 +308,42 @@ def main():
 
     all_summaries = []
     for weight in weights:
+        manifest_entry = backend_manifests.get(weight.name)
+        manifest_path = None
+        manifest = None
         generated_dir = generated_dir_overrides.get(weight.name)
-        if generated_dir is None:
+        metadata_path = args.metadata_path
+        dataset_base_path = args.dataset_base_path
+        artifact_type = "video"
+        backend_name = None
+
+        if manifest_entry is not None:
+            manifest_path, manifest = manifest_entry
+            generated_dir = Path(manifest.generated_dir)
+            metadata_path = manifest.metadata_path or metadata_path
+            dataset_base_path = manifest.dataset_base_path or dataset_base_path
+            artifact_type = manifest.artifact_type
+            backend_name = manifest.backend
+            if artifact_type != "video":
+                raise ValueError(
+                    f"Backend manifest for {weight.name} has artifact_type={artifact_type!r}; "
+                    "this eval runner currently supports video artifacts only."
+                )
+        elif generated_dir is None:
             run_id = f"{run_prefix}_{weight.name}"
             generated_dir = REPO_ROOT / "logs" / config_name / run_id
 
-        if not args.skip_inference:
+        if not args.skip_inference and manifest_entry is None:
             run_inference(args, weight, generated_dir)
         require_path(str(generated_dir), f"Generated video directory for {weight.name}")
+        require_path(metadata_path, f"Metadata path for {weight.name}")
+        require_path(dataset_base_path, f"Dataset base path for {weight.name}")
 
         metric_output_dir = output_root / "metrics" / weight.name
         print(f"[Eval][{weight.name}] Computing metrics from {generated_dir}", flush=True)
         summary = evaluate_video_quality(
-            metadata_path=args.metadata_path,
-            dataset_base_path=args.dataset_base_path,
+            metadata_path=metadata_path,
+            dataset_base_path=dataset_base_path,
             generated_dir=str(generated_dir),
             weight_name=weight.name,
             output_dir=str(metric_output_dir),
@@ -302,6 +359,9 @@ def main():
             fvd_image_size=args.fvd_image_size,
             strict=not args.allow_missing_pairs,
         )
+        summary["backend"] = backend_name
+        summary["artifact_type"] = artifact_type
+        summary["backend_manifest"] = str(manifest_path) if manifest_path is not None else None
         append_summary(summary_csv, summary)
         all_summaries.append(summary)
         print(
