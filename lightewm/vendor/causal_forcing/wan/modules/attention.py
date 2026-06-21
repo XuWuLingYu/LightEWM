@@ -1,4 +1,5 @@
 # Copyright 2024-2025 The Alibaba Wan Team Authors. All rights reserved.
+import os
 import torch
 
 try:
@@ -19,6 +20,18 @@ try:
 except ModuleNotFoundError:
     FLASH_ATTN_2_AVAILABLE = False
 
+try:
+    from flash_attn.cute import flash_attn_varlen_func as flash_attn_4_varlen_func
+    FLASH_ATTN_4_AVAILABLE = os.environ.get("CAUSAL_ENABLE_FLASH_ATTN_4") == "1"
+except (ImportError, ModuleNotFoundError):
+    flash_attn_4_varlen_func = None
+    FLASH_ATTN_4_AVAILABLE = False
+
+if os.environ.get("CAUSAL_FORCE_ATTENTION_FALLBACK") == "1":
+    FLASH_ATTN_2_AVAILABLE = False
+    FLASH_ATTN_3_AVAILABLE = False
+    FLASH_ATTN_4_AVAILABLE = False
+
 # FLASH_ATTN_3_AVAILABLE = False
 
 import warnings
@@ -27,6 +40,14 @@ __all__ = [
     'flash_attention',
     'attention',
 ]
+
+
+def _has_real_padding(lens, full_len):
+    if lens is None:
+        return False
+    if torch.is_tensor(lens):
+        return bool((lens != full_len).any().item())
+    return any(int(length) != full_len for length in lens)
 
 
 def flash_attention(
@@ -67,10 +88,16 @@ def flash_attention(
     def half(x):
         return x if x.dtype in half_dtypes else x.to(dtype)
 
-    if not FLASH_ATTN_2_AVAILABLE and not FLASH_ATTN_3_AVAILABLE:
-        if q_lens is not None or k_lens is not None:
-            warnings.warn(
-                'Padding mask is disabled when using scaled_dot_product_attention. It can have a significant impact on performance.'
+    use_flash_attn_4 = FLASH_ATTN_4_AVAILABLE and not FLASH_ATTN_2_AVAILABLE and not FLASH_ATTN_3_AVAILABLE and dropout_p == 0
+    if not FLASH_ATTN_2_AVAILABLE and not FLASH_ATTN_3_AVAILABLE and not use_flash_attn_4:
+        if _has_real_padding(q_lens, lq) or _has_real_padding(k_lens, lk) or window_size != (-1, -1):
+            raise RuntimeError(
+                'scaled_dot_product_attention fallback does not preserve varlen padding '
+                'or windowed attention semantics. Install a compatible flash attention '
+                f'backend instead: q_lens={q_lens}, k_lens={k_lens}, '
+                f'window_size={window_size}, FLASH_ATTN_2_AVAILABLE={FLASH_ATTN_2_AVAILABLE}, '
+                f'FLASH_ATTN_3_AVAILABLE={FLASH_ATTN_3_AVAILABLE}, '
+                f'FLASH_ATTN_4_AVAILABLE={FLASH_ATTN_4_AVAILABLE}.'
             )
         if q_scale is not None:
             q = q * q_scale
@@ -109,7 +136,7 @@ def flash_attention(
 
     if version is not None and version == 3 and not FLASH_ATTN_3_AVAILABLE:
         warnings.warn(
-            'Flash attention 3 is not available, use flash attention 2 instead.'
+            'Flash attention 3 is not available; using another available flash attention backend if present.'
         )
 
     # apply attention
@@ -128,8 +155,7 @@ def flash_attention(
             softmax_scale=softmax_scale,
             causal=causal,
             deterministic=deterministic)[0].unflatten(0, (b, lq))
-    else:
-        assert FLASH_ATTN_2_AVAILABLE
+    elif FLASH_ATTN_2_AVAILABLE:
         x = flash_attn.flash_attn_varlen_func(
             q=q,
             k=k,
@@ -145,6 +171,30 @@ def flash_attention(
             causal=causal,
             window_size=window_size,
             deterministic=deterministic).unflatten(0, (b, lq))
+    elif use_flash_attn_4:
+        fa4_window_size = (None, None) if window_size == (-1, -1) else window_size
+        x = flash_attn_4_varlen_func(
+            q=q,
+            k=k,
+            v=v,
+            cu_seqlens_q=torch.cat([q_lens.new_zeros([1]), q_lens]).cumsum(
+                0, dtype=torch.int32).to(q.device, non_blocking=True),
+            cu_seqlens_k=torch.cat([k_lens.new_zeros([1]), k_lens]).cumsum(
+                0, dtype=torch.int32).to(q.device, non_blocking=True),
+            max_seqlen_q=lq,
+            max_seqlen_k=lk,
+            softmax_scale=softmax_scale,
+            causal=causal,
+            window_size=fa4_window_size,
+            deterministic=deterministic)[0].unflatten(0, (b, lq))
+    else:
+        raise RuntimeError(
+            'No compatible flash attention backend is available for the requested '
+            f'configuration: version={version}, dropout_p={dropout_p}, '
+            f'FLASH_ATTN_2_AVAILABLE={FLASH_ATTN_2_AVAILABLE}, '
+            f'FLASH_ATTN_3_AVAILABLE={FLASH_ATTN_3_AVAILABLE}, '
+            f'FLASH_ATTN_4_AVAILABLE={FLASH_ATTN_4_AVAILABLE}.'
+        )
 
     # output
     return x.type(out_dtype)
@@ -165,7 +215,7 @@ def attention(
     dtype=torch.bfloat16,
     fa_version=None,
 ):
-    if FLASH_ATTN_2_AVAILABLE or FLASH_ATTN_3_AVAILABLE:
+    if FLASH_ATTN_2_AVAILABLE or FLASH_ATTN_3_AVAILABLE or FLASH_ATTN_4_AVAILABLE:
         return flash_attention(
             q=q,
             k=k,
@@ -182,9 +232,14 @@ def attention(
             version=fa_version,
         )
     else:
-        if q_lens is not None or k_lens is not None:
-            warnings.warn(
-                'Padding mask is disabled when using scaled_dot_product_attention. It can have a significant impact on performance.'
+        if _has_real_padding(q_lens, q.size(1)) or _has_real_padding(k_lens, k.size(1)) or window_size != (-1, -1):
+            raise RuntimeError(
+                'scaled_dot_product_attention fallback does not preserve varlen padding '
+                'or windowed attention semantics. Install a compatible flash attention '
+                f'backend instead: q_lens={q_lens}, k_lens={k_lens}, '
+                f'window_size={window_size}, FLASH_ATTN_2_AVAILABLE={FLASH_ATTN_2_AVAILABLE}, '
+                f'FLASH_ATTN_3_AVAILABLE={FLASH_ATTN_3_AVAILABLE}, '
+                f'FLASH_ATTN_4_AVAILABLE={FLASH_ATTN_4_AVAILABLE}.'
             )
         attn_mask = None
 

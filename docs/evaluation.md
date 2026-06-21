@@ -94,6 +94,30 @@ python scripts/evaluate_video_quality.py \
   --weight wan22_5b_libero=/pfs-verdent/zhangyu/robot-trial/checkpoints/Wan2.2-5B-Libero/checkpoint.safetensors
 ```
 
+## Backend Manifest Protocol
+
+Inference runners write a lightweight `backend_manifest.json` into their output directory.
+The manifest is the stable handoff from backend runners to evaluation code: it records the
+backend name, artifact type, generated artifact directory, and optional dataset metadata paths.
+
+Current producers:
+- `WanInferRunner` writes `backend=wan_ti2v` video manifests.
+- `CausalForcingRunner` writes `backend=causal_forcing` manifests after vendored Causal-Forcing runs.
+- `RoboTwinRunner` writes `backend=robotwin` rollout manifests and can optionally launch an external RoboTwin command.
+
+Video quality evaluation can consume video manifests directly:
+
+```bash
+python scripts/evaluate_video_quality.py \
+  --skip-inference \
+  --backend-manifest causal=logs/LIBERO-Causal/<run-id>/backend_manifest.json \
+  --metrics fvd,ssim,psnr,lpips
+```
+
+Non-video artifact types, such as `robotwin_rollout`, intentionally fail fast in the video
+quality evaluator until a RoboTwin task-metric evaluator is added. This keeps the backend
+contract shared without pretending all artifacts use the same metrics.
+
 ## 4. Smoke Checks
 
 Bidirectional diffusion inference, one sample and two denoising steps:

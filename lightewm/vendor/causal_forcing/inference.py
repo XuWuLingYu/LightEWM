@@ -2,6 +2,7 @@ import argparse
 import datetime
 import torch
 import os
+import time
 from omegaconf import OmegaConf
 from tqdm import tqdm
 from torchvision import transforms
@@ -318,6 +319,7 @@ for i, batch_data in tqdm(enumerate(dataloader), disable=(local_rank != 0)):
     )
 
     # Generate 81 frames
+    case_start = time.perf_counter()
     if vertical_hierarchy:
         inference_output = pipeline.inference(
             noise=sampled_noise,
@@ -339,6 +341,7 @@ for i, batch_data in tqdm(enumerate(dataloader), disable=(local_rank != 0)):
         video, vertical_payload = inference_output
     else:
         video = inference_output
+    inference_seconds = time.perf_counter() - case_start
     video = rearrange(video, 'b t c h w -> b t h w c').cpu()
 
     # Final output video
@@ -377,3 +380,12 @@ for i, batch_data in tqdm(enumerate(dataloader), disable=(local_rank != 0)):
     pipeline.vae.clear_cache()
 
     write_video(output_path, video[0], fps=16)
+    total_seconds = time.perf_counter() - case_start
+    if local_rank == 0:
+        print(
+            f"[CausalTiming] idx={idx} "
+            f"inference_seconds={inference_seconds:.6f} "
+            f"total_seconds={total_seconds:.6f} "
+            f"output={output_path}",
+            flush=True,
+        )
