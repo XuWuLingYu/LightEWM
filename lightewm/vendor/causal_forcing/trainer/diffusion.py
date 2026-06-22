@@ -12,6 +12,9 @@ import wandb
 import time
 import os
 import math
+import json
+import subprocess
+import sys
 from utils.distributed import EMA_FSDP, barrier, fsdp_wrap, fsdp_state_dict, launch_distributed_job
 from pipeline import (
     CausalDiffusionInferencePipeline,
@@ -68,6 +71,15 @@ def _load_generator_checkpoint(path):
                 k = k.replace("model._fsdp_wrapped_module.", "model.", 1)
             fixed[k] = v
         state_dict = fixed
+    return state_dict
+
+
+def _load_action_checkpoint(path):
+    state_dict = torch.load(path, map_location="cpu")
+    if "action_dit" in state_dict:
+        return state_dict["action_dit"]
+    if "backbone_state_dict" in state_dict:
+        return state_dict["backbone_state_dict"]
     return state_dict
 
 
@@ -181,6 +193,32 @@ class Trainer:
                         f"unexpected={list(load_info.unexpected_keys)}",
                         flush=True,
                     )
+            if self.action_training and getattr(config, "action_dit_ckpt", None):
+                print(f"Loading pretrained action_dit from {config.action_dit_ckpt}")
+                load_info = self.model.action_dit.load_state_dict(
+                    _load_action_checkpoint(config.action_dit_ckpt),
+                    strict=False,
+                )
+                if self.is_main_process:
+                    print(
+                        "Loaded action_dit with "
+                        f"missing={list(load_info.missing_keys)} "
+                        f"unexpected={list(load_info.unexpected_keys)}",
+                        flush=True,
+                    )
+            if self.action_training and getattr(config, "action_dit_pretrained_path", None):
+                print(f"Loading FastWAM action backbone from {config.action_dit_pretrained_path}")
+                load_info = self.model.action_dit.load_state_dict(
+                    _load_action_checkpoint(config.action_dit_pretrained_path),
+                    strict=False,
+                )
+                if self.is_main_process:
+                    print(
+                        "Loaded FastWAM action backbone with "
+                        f"missing={list(load_info.missing_keys)} "
+                        f"unexpected={list(load_info.unexpected_keys)}",
+                        flush=True,
+                    )
             self.model.joint_mot = HDRVideoActionJointMoT(
                 generator=self.model.generator,
                 action_dit=self.model.action_dit,
@@ -247,17 +285,21 @@ class Trainer:
                 buffer_dtype=getattr(config, "fsdp_buffer_dtype", "float32"),
             )
 
-        self.model.text_encoder = fsdp_wrap(
-            self.model.text_encoder,
-            sharding_strategy=config.sharding_strategy,
-            mixed_precision=config.mixed_precision,
-            wrap_strategy=config.text_encoder_fsdp_wrap_strategy,
-            cpu_offload=getattr(config, "text_encoder_cpu_offload", False),
-            reduce_dtype=getattr(config, "fsdp_reduce_dtype", "float32"),
-            buffer_dtype=getattr(config, "fsdp_buffer_dtype", "float32"),
-        )
+        self.use_preencoded_cache = bool(getattr(config, "use_preencoded_cache", False))
+        if not self.use_preencoded_cache:
+            self.model.text_encoder = fsdp_wrap(
+                self.model.text_encoder,
+                sharding_strategy=config.sharding_strategy,
+                mixed_precision=config.mixed_precision,
+                wrap_strategy=config.text_encoder_fsdp_wrap_strategy,
+                cpu_offload=getattr(config, "text_encoder_cpu_offload", False),
+                reduce_dtype=getattr(config, "fsdp_reduce_dtype", "float32"),
+                buffer_dtype=getattr(config, "fsdp_buffer_dtype", "float32"),
+            )
 
-        if not config.no_visualize or config.load_raw_video or self.video_action_joint_training:
+        if (not self.use_preencoded_cache) and (
+            not config.no_visualize or config.load_raw_video or self.video_action_joint_training
+        ):
             self.model.vae = self.model.vae.to(
                 device=self.device, dtype=torch.bfloat16 if config.mixed_precision else torch.float32)
 
@@ -339,6 +381,15 @@ class Trainer:
         self.lr_min_ratio = float(getattr(config, "lr_min_ratio", 0.0))
         self._base_lrs = [float(group["lr"]) for group in self.generator_optimizer.param_groups]
 
+        self.open_loop_val_interval = int(getattr(self.config, "open_loop_val_interval", 0) or 0)
+        self.open_loop_val_num_batches = int(getattr(self.config, "open_loop_val_num_batches", 1) or 1)
+        self.open_loop_val_batch_size = int(getattr(self.config, "open_loop_val_batch_size", 1) or 1)
+        self.open_loop_val_joint_steps = int(
+            getattr(self.config, "open_loop_val_joint_steps", getattr(self.config, "libero_eval_joint_steps", 10))
+        )
+        self.open_loop_val_data_path = str(getattr(self.config, "open_loop_val_data_path", config.data_path))
+        self.val_dataloader = None
+
         # Step 3: Initialize the dataloader
         data_backend = getattr(config, "data_backend", "lmdb_latent")
         if data_backend == "jsonl_video":
@@ -364,11 +415,13 @@ class Trainer:
                 joint_include_terminal_video_frame=bool(getattr(config, "joint_include_terminal_video_frame", False)),
                 joint_norm_clip=float(getattr(config, "joint_norm_clip", 1.0)),
                 joint_drop_tree_tokens=bool(getattr(config, "joint_drop_tree_tokens", False)),
+                joint_tree_from_hdf5=bool(getattr(config, "joint_tree_from_hdf5", False)),
+                joint_tree_camera_key=getattr(config, "joint_tree_camera_key", None),
                 joint_proprio_stats_path=getattr(config, "joint_proprio_stats_path", None),
             )
         else:
             dataset = LatentLMDBDataset(config.data_path, max_pair=int(1e8))
-
+       
         self.dataset = dataset
         sampler = torch.utils.data.distributed.DistributedSampler(
             dataset, shuffle=True, drop_last=True)
@@ -381,6 +434,8 @@ class Trainer:
         if dist.get_rank() == 0:
             print("DATASET SIZE %d" % len(dataset))
         self.dataloader = cycle(dataloader)
+        if self.video_action_joint_training and self.open_loop_val_interval > 0:
+            self.val_dataloader = self._build_open_loop_val_dataloader()
         total_batch_size = getattr(config, "total_batch_size", None)
         if total_batch_size is None:
             self.gradient_accumulation_steps = 1
@@ -441,19 +496,14 @@ class Trainer:
             print(f"Loading pretrained generator from {config.generator_ckpt}")
             self.model.generator.load_state_dict(_load_generator_checkpoint(config.generator_ckpt), strict=True)
 
-        if self.action_training and getattr(config, "action_dit_ckpt", None):
+        if self.action_training and (not self.video_action_joint_training) and getattr(config, "action_dit_ckpt", None):
             print(f"Loading pretrained action_dit from {config.action_dit_ckpt}")
-            action_state = torch.load(config.action_dit_ckpt, map_location="cpu")
-            if "action_dit" in action_state:
-                action_state = action_state["action_dit"]
-            elif "backbone_state_dict" in action_state:
-                action_state = action_state["backbone_state_dict"]
             action_target = (
                 self.model.joint_mot.module.action_dit
                 if self.video_action_joint_training
                 else self.model.action_dit
             )
-            load_info = action_target.load_state_dict(action_state, strict=False)
+            load_info = action_target.load_state_dict(_load_action_checkpoint(config.action_dit_ckpt), strict=False)
             if self.is_main_process:
                 print(
                     "Loaded action_dit with "
@@ -471,8 +521,22 @@ class Trainer:
         self.max_grad_norm = float(getattr(config, "max_grad_norm", 10.0))
         self.previous_time = None
         self.delta_mean = None
-        self.rtf_ema_ratio = getattr(self.config, "rtf_ema_ratio", 0.9)
+        self.rtf_ema_ratio = getattr(self.config, "rtf_ema_ratio", 0.9) 
         self.eval_interval = getattr(self.config, "eval_interval", 0)      # 0 => disable
+        self.libero_eval_interval = int(getattr(self.config, "libero_eval_interval", 0) or 0)
+        self.libero_eval_script = str(getattr(self.config, "libero_eval_script", "scripts/eval_libero_hdr_video_action_joint_suites.py"))
+        self.libero_eval_metadata = str(getattr(self.config, "libero_eval_metadata", "data/libero_i2v_train/metadata_dense_prompt_hdr_video_action_joint_fastwam_local.csv"))
+        self.libero_eval_suites = list(_to_plain_config(getattr(self.config, "libero_eval_suites", ["libero_10"])))
+        self.libero_eval_tasks_per_suite = int(getattr(self.config, "libero_eval_tasks_per_suite", 1))
+        self.libero_eval_episodes_per_task = int(getattr(self.config, "libero_eval_episodes_per_task", 1))
+        self.libero_eval_joint_steps = int(getattr(self.config, "libero_eval_joint_steps", 10))
+        self.libero_eval_tree_fixed_denoise_steps = int(getattr(self.config, "libero_eval_tree_fixed_denoise_steps", 5))
+        self.libero_eval_tree_sampling_steps = int(getattr(self.config, "libero_eval_tree_sampling_steps", 50))
+        self.libero_eval_execute_steps = int(getattr(self.config, "libero_eval_execute_steps", 8))
+        self.libero_eval_timeout_steps = int(getattr(self.config, "libero_eval_timeout_steps", 600))
+        self.libero_eval_device = str(getattr(self.config, "libero_eval_device", "cuda:0"))
+        self.libero_eval_disable_proprio = bool(getattr(self.config, "libero_eval_disable_proprio", False))
+        self.libero_eval_save_tree_video = bool(getattr(self.config, "libero_eval_save_tree_video", False))
         self.eval_frames = getattr(self.config, "eval_num_output_frames", 21)
         self.eval_init = getattr(self.config, "eval_num_init_frames", 3)
         self.rtf_single_gpu_batch = getattr(self.config, "rtf_single_gpu_batch", 1)
@@ -487,6 +551,246 @@ class Trainer:
             self.pipeline = CausalDiffusionInferencePipeline(config, device=self.device)
             self.pipeline.generator = self.model.generator
             self.pipeline.text_encoder = self.model.text_encoder
+
+    def _resolve_repo_path(self, path: str) -> str:
+        if os.path.isabs(path):
+            return path
+        backend_root = os.path.abspath(os.getcwd())
+        repo_root = os.path.abspath(os.path.join(backend_root, "..", "..", ".."))
+        return os.path.join(repo_root, path)
+
+    def _build_open_loop_val_dataloader(self):
+        dataset = TextVideoDataset(
+            metadata_path=self.open_loop_val_data_path,
+            height=self.config.height,
+            width=self.config.width,
+            num_frames=self.config.num_frames,
+            variable_num_frames=getattr(self.config, "variable_num_frames_train", True),
+            max_num_frames=getattr(self.config, "max_training_video_frames", 253),
+            video_action_joint=True,
+            joint_window_frames=int(getattr(self.config, "joint_window_frames", 13)),
+            joint_source_fps=float(getattr(self.config, "joint_source_fps", 16.0)),
+            joint_target_fps=float(getattr(self.config, "joint_target_fps", 10.0)),
+            joint_video_frame_stride=int(getattr(self.config, "joint_video_frame_stride", 1)),
+            joint_camera_key=getattr(self.config, "joint_camera_key", "agentview_rgb"),
+            joint_include_terminal_video_frame=bool(getattr(self.config, "joint_include_terminal_video_frame", False)),
+            joint_norm_clip=float(getattr(self.config, "joint_norm_clip", 1.0)),
+            joint_drop_tree_tokens=bool(getattr(self.config, "joint_drop_tree_tokens", False)),
+            joint_tree_from_hdf5=bool(getattr(self.config, "joint_tree_from_hdf5", False)),
+            joint_tree_camera_key=getattr(self.config, "joint_tree_camera_key", None),
+            joint_proprio_stats_path=getattr(self.config, "joint_proprio_stats_path", None),
+        )
+        sampler = torch.utils.data.distributed.DistributedSampler(dataset, shuffle=False, drop_last=False)
+        dataloader = torch.utils.data.DataLoader(
+            dataset,
+            batch_size=self.open_loop_val_batch_size,
+            sampler=sampler,
+            num_workers=int(getattr(self.config, "open_loop_val_num_workers", 0) or 0),
+            drop_last=False,
+        )
+        if self.is_main_process:
+            print(
+                "[OpenLoopVal] "
+                f"dataset={len(dataset)} batch_size={self.open_loop_val_batch_size} "
+                f"num_batches={self.open_loop_val_num_batches} interval={self.open_loop_val_interval} "
+                f"joint_steps={self.open_loop_val_joint_steps}",
+                flush=True,
+            )
+        return cycle(dataloader)
+
+    def _maybe_run_open_loop_val(self):
+        if self.open_loop_val_interval <= 0 or self.val_dataloader is None:
+            return
+        if not self.video_action_joint_training:
+            return
+        if not bool(getattr(self, "_last_optimizer_step", True)):
+            return
+        if self.step <= 0 or self.step % self.open_loop_val_interval != 0:
+            return
+
+        was_training = self.model.joint_mot.training if getattr(self.model, "joint_mot", None) is not None else False
+        self.model.joint_mot.eval()
+        totals = torch.zeros(6, device=self.device, dtype=torch.float64)
+        start = time.time()
+        try:
+            for _ in range(self.open_loop_val_num_batches):
+                batch = next(self.val_dataloader)
+                text_prompts = batch["prompts"]
+                with torch.no_grad():
+                    if "clean_latent" in batch:
+                        clean_latent = batch["clean_latent"].to(device=self.device, dtype=self.dtype)
+                        joint_local_start_latent = batch["joint_local_start_latent"].to(
+                            device=self.device, dtype=self.dtype
+                        )
+                        joint_local_video_latents = batch["joint_local_video_latents"].to(
+                            device=self.device, dtype=self.dtype
+                        )
+                        if "prompt_embeds" not in batch:
+                            raise KeyError("preencoded open-loop val batch is missing `prompt_embeds`.")
+                        conditional_dict = {
+                            "prompt_embeds": batch["prompt_embeds"].to(device=self.device, dtype=self.dtype)
+                        }
+                    else:
+                        frames = batch["frames"].to(device=self.device, dtype=self.dtype)
+                        joint_local_frames = batch["joint_local_frames"].to(device=self.device, dtype=self.dtype)
+                        clean_latent = self.model.vae.encode_to_latent(frames).to(device=self.device, dtype=self.dtype)
+                        joint_local_start_latent = self.model.vae.encode_to_latent(
+                            joint_local_frames[:, :, :1]
+                        ).to(device=self.device, dtype=self.dtype)
+                        joint_local_video_latents = self.model.vae.encode_to_latent(
+                            joint_local_frames
+                        ).to(device=self.device, dtype=self.dtype)[:, 1:]
+                        conditional_dict = self.model.text_encoder(text_prompts=text_prompts)
+                    val_out = self.model.open_loop_action_val(
+                        conditional_dict=conditional_dict,
+                        clean_latent=clean_latent,
+                        initial_latent=clean_latent[:, :1],
+                        joint_actions=batch["joint_actions"],
+                        joint_proprio=batch.get("joint_proprio"),
+                        joint_local_start_latent=joint_local_start_latent,
+                        joint_local_video_latents=joint_local_video_latents,
+                        joint_steps=self.open_loop_val_joint_steps,
+                    )
+                totals += torch.stack([
+                    val_out["val_action_l1_raw_sum"].detach().to(device=self.device, dtype=torch.float64),
+                    val_out["val_action_l2_raw_sum"].detach().to(device=self.device, dtype=torch.float64),
+                    val_out["val_action_l1_norm_sum"].detach().to(device=self.device, dtype=torch.float64),
+                    val_out["val_action_l2_norm_sum"].detach().to(device=self.device, dtype=torch.float64),
+                    val_out["val_action_mse_norm_sum"].detach().to(device=self.device, dtype=torch.float64),
+                    val_out["val_action_count"].detach().to(device=self.device, dtype=torch.float64),
+                ])
+        finally:
+            if was_training:
+                self.model.joint_mot.train()
+        if dist.is_initialized():
+            dist.all_reduce(totals, op=dist.ReduceOp.SUM)
+        l1_raw_sum, l2_raw_sum, l1_norm_sum, l2_norm_sum, mse_norm_sum, elem_count = totals.tolist()
+        elem_count = max(elem_count, 1.0)
+        step_count = max(elem_count / float(getattr(self.config, "action_dim", 7)), 1.0)
+        metrics = {
+            "val/open_loop_action_l1": l1_raw_sum / elem_count,
+            "val/open_loop_action_l2": l2_raw_sum / elem_count,
+            "val/open_loop_action_l1_norm": l1_norm_sum / elem_count,
+            "val/open_loop_action_l2_norm": l2_norm_sum / step_count,
+            "val/open_loop_action_mse_norm": mse_norm_sum / elem_count,
+            "val/open_loop_action_rmse_norm": math.sqrt(mse_norm_sum / elem_count),
+            "val/open_loop_num_samples": step_count / float(getattr(self.config, "joint_window_frames", 1)),
+            "val/open_loop_seconds": time.time() - start,
+        }
+        if self.is_main_process:
+            if not self.disable_wandb:
+                wandb.log(metrics, step=self.step)
+            print(f"[OpenLoopVal] step={self.step} metrics={metrics}", flush=True)
+
+    def _maybe_run_libero_eval(self):
+        if self.libero_eval_interval <= 0:
+            return
+        if not self.video_action_joint_training:
+            return
+        if not bool(getattr(self, "_last_optimizer_step", True)):
+            return
+        if self.step <= 0 or self.step % self.libero_eval_interval != 0:
+            return
+
+        output_path_abs = os.path.abspath(self.output_path)
+        ckpt_dir = os.path.join(output_path_abs, f"checkpoint_model_{self.step:06d}")
+        ckpt_path = os.path.join(ckpt_dir, "model.pt")
+        if not self.config.no_save:
+            torch.cuda.empty_cache()
+            self.save()
+            torch.cuda.empty_cache()
+        barrier()
+
+        if self.is_main_process:
+            eval_dir = os.path.join(output_path_abs, "libero_eval", f"step_{self.step:06d}")
+            os.makedirs(eval_dir, exist_ok=True)
+            repo_root = self._resolve_repo_path(".")
+            script_path = self._resolve_repo_path(self.libero_eval_script)
+            config_path = os.path.join(output_path_abs, "causal_forcing_config.yaml")
+            cmd = [
+                sys.executable,
+                script_path,
+                "--backend-root",
+                os.getcwd(),
+                "--config-path",
+                config_path,
+                "--checkpoint",
+                ckpt_path,
+                "--metadata",
+                self._resolve_repo_path(self.libero_eval_metadata),
+                "--output-dir",
+                eval_dir,
+                "--device",
+                self.libero_eval_device,
+                "--joint-steps",
+                str(self.libero_eval_joint_steps),
+                "--tree-fixed-denoise-steps",
+                str(self.libero_eval_tree_fixed_denoise_steps),
+                "--tree-sampling-steps",
+                str(self.libero_eval_tree_sampling_steps),
+                "--closed-loop-execute-steps",
+                str(self.libero_eval_execute_steps),
+                "--closed-loop-timeout-steps",
+                str(self.libero_eval_timeout_steps),
+                "--tasks-per-suite",
+                str(self.libero_eval_tasks_per_suite),
+                "--episodes-per-task",
+                str(self.libero_eval_episodes_per_task),
+                "--suites",
+                *[str(item) for item in self.libero_eval_suites],
+            ]
+            if self.libero_eval_disable_proprio:
+                cmd.append("--disable-proprio")
+            if self.libero_eval_save_tree_video:
+                cmd.append("--save-tree-video")
+            env = os.environ.copy()
+            env["PYTHONPATH"] = os.pathsep.join(
+                [
+                    self._resolve_repo_path("data/python-packages"),
+                    os.getcwd(),
+                    self._resolve_repo_path("scripts"),
+                    env.get("PYTHONPATH", ""),
+                ]
+            )
+            log_path = os.path.join(eval_dir, "eval.log")
+            print("[LIBEROEval] Running:", " ".join(cmd), flush=True)
+            start = time.time()
+            ok = False
+            error_text = ""
+            with open(log_path, "w", encoding="utf-8") as log_file:
+                proc = subprocess.run(
+                    cmd,
+                    cwd=repo_root,
+                    env=env,
+                    stdout=log_file,
+                    stderr=subprocess.STDOUT,
+                    text=True,
+                )
+                ok = proc.returncode == 0
+                if not ok:
+                    error_text = f"returncode={proc.returncode}"
+            summary_path = os.path.join(eval_dir, "summary.json")
+            metrics = {
+                "eval/libero_ok": 1.0 if ok else 0.0,
+                "eval/libero_seconds": time.time() - start,
+            }
+            if os.path.exists(summary_path):
+                with open(summary_path, "r", encoding="utf-8") as f:
+                    summary = json.load(f)
+                metrics.update({
+                    "eval/libero_num_rollouts": float(summary.get("num_rollouts", 0)),
+                    "eval/libero_success_rate": float(summary.get("overall_success_rate", 0.0)),
+                    "eval/libero_pre_hierarchical_time_mean_sec": float(summary.get("overall_pre_hierarchical_time_mean_sec", 0.0)),
+                    "eval/libero_closed_loop_time_mean_sec": float(summary.get("overall_closed_loop_time_mean_sec", 0.0)),
+                })
+                for suite, suite_summary in summary.get("by_suite", {}).items():
+                    metrics[f"eval/{suite}_success_rate"] = float(suite_summary.get("success_rate", 0.0))
+            else:
+                error_text = error_text or "summary.json missing"
+            if not self.disable_wandb:
+                wandb.log(metrics, step=self.step)
+            print(f"[LIBEROEval] step={self.step} ok={ok} metrics={metrics} {error_text}", flush=True)
+        barrier()
 
     def _video_expert_for_action(self):
         if getattr(self.model, "joint_mot", None) is not None:
@@ -711,6 +1015,8 @@ class Trainer:
 
         # Step 1: Get the next batch of text prompts
         text_prompts = batch["prompts"]
+        cached_clean_latent = batch.get("clean_latent")
+        cached_prompt_embeds = batch.get("prompt_embeds")
         cached_action_video_latents = batch.get("video_latents")
         cached_action_video_leaf_latents = batch.get("video_leaf_latents")
         cached_action_video_leaf_k = batch.get("video_leaf_k")
@@ -719,7 +1025,18 @@ class Trainer:
         cached_video_timestep = batch.get("video_timestep")
         joint_local_start_latent = None
         joint_local_video_latents = None
-        if self.video_action_joint_training:
+        if self.video_action_joint_training and cached_clean_latent is not None:
+            clean_latent = cached_clean_latent.to(device=self.device, dtype=self.dtype)
+            joint_local_start_latent = batch["joint_local_start_latent"].to(device=self.device, dtype=self.dtype)
+            joint_local_video_latents = batch["joint_local_video_latents"].to(device=self.device, dtype=self.dtype)
+            record_time("host_to_device")
+            record_time("vae_encode")
+            image_latent = clean_latent[:, 0:1]
+            image_or_video_shape = list(clean_latent.shape)
+            action_video_latents = None
+            action_video_leaf_k = None
+            action_video_leaf_v = None
+        elif self.video_action_joint_training:
             joint_local_frames = batch["joint_local_frames"].to(device=self.device, dtype=self.dtype)
             record_time("host_to_device")
             with torch.no_grad():
@@ -789,7 +1106,7 @@ class Trainer:
             frames = batch["frames"].to(
                 device=self.device, dtype=self.dtype)
             record_time("host_to_device")
-
+           
             with torch.no_grad():
                 clean_latent = self.model.vae.encode_to_latent(
                     frames).to(device=self.device, dtype=self.dtype)
@@ -805,21 +1122,45 @@ class Trainer:
             cached_video_timestep = cached_video_timestep.to(device=self.device, dtype=self.dtype)
 
         # Step 2: Extract the conditional infos
-        with torch.no_grad():
-            conditional_dict = self.model.text_encoder(
-                text_prompts=text_prompts)
+        if cached_prompt_embeds is not None:
+            conditional_dict = {
+                "prompt_embeds": cached_prompt_embeds.to(device=self.device, dtype=self.dtype)
+            }
             record_time("text_cond")
             if not getattr(self, "unconditional_dict", None):
-                unconditional_dict = self.model.text_encoder(
-                    text_prompts=[self.config.negative_prompt] * batch_size)
-                unconditional_dict = {k: v.detach()
-                                      for k, v in unconditional_dict.items()}
-                self.unconditional_dict = unconditional_dict  # cache the unconditional_dict
-                record_time("text_uncond")
+                unconditional_prompt_embeds = batch.get("negative_prompt_embeds")
+                if unconditional_prompt_embeds is not None:
+                    unconditional_dict = {
+                        "prompt_embeds": unconditional_prompt_embeds.to(device=self.device, dtype=self.dtype)
+                    }
+                    self.unconditional_dict = {k: v.detach() for k, v in unconditional_dict.items()}
+                    record_time("text_uncond")
+                else:
+                    unconditional_dict = {
+                        "prompt_embeds": torch.zeros_like(conditional_dict["prompt_embeds"])
+                    }
+                    self.unconditional_dict = unconditional_dict
+                    record_time("text_uncond")
             else:
                 unconditional_dict = self.unconditional_dict
                 if profile_step:
                     timer["text_uncond"] = 0.0
+        else:
+            with torch.no_grad():
+                conditional_dict = self.model.text_encoder(
+                    text_prompts=text_prompts)
+                record_time("text_cond")
+                if not getattr(self, "unconditional_dict", None):
+                    unconditional_dict = self.model.text_encoder(
+                        text_prompts=[self.config.negative_prompt] * batch_size)
+                    unconditional_dict = {k: v.detach()
+                                          for k, v in unconditional_dict.items()}
+                    self.unconditional_dict = unconditional_dict  # cache the unconditional_dict
+                    record_time("text_uncond")
+                else:
+                    unconditional_dict = self.unconditional_dict
+                    if profile_step:
+                        timer["text_uncond"] = 0.0
         if (
             self.is_main_process
             and bool(getattr(self.config, "debug_prompt_embed_stats", False))
@@ -977,6 +1318,9 @@ class Trainer:
                 torch.cuda.empty_cache()
                 self.save()
                 torch.cuda.empty_cache()
+            if did_optimizer_step:
+                self._maybe_run_open_loop_val()
+                self._maybe_run_libero_eval()
             if profile_step:
                 timer["save"] = self._timer_now() - save_start
 

@@ -83,7 +83,7 @@ class CausalForcingRunner:
         official_config_path = params.get("official_config_path", str(self.DEFAULT_CONFIG_PATH))
         output_path = run_root / "causal_forcing_config.yaml"
         output_overrides = dict(params.get("causal_config_overrides", {}))
-        for checkpoint_key in ("generator_ckpt", "action_dit_ckpt"):
+        for checkpoint_key in ("generator_ckpt", "action_dit_ckpt", "action_dit_pretrained_path"):
             if checkpoint_key in output_overrides and output_overrides[checkpoint_key]:
                 output_overrides[checkpoint_key] = self._relative_to_backend(
                     output_overrides[checkpoint_key],

@@ -1,0 +1,85 @@
+task: train
+
+runner:
+  class_path: lightewm.runner.causal_forcing.CausalForcingRunner
+  params:
+    output_path: ./logs/train/LIBERO-HDR-VideoActionJoint-DetachActionVideoKV
+    backend_root: ../HiDiT/Causal-Forcing
+    official_config_path: ../HiDiT/Causal-Forcing/configs/maze_recursive_7_11_17_26_40_50_all_condition_push_v4.yaml
+    model_root: checkpoints
+    num_processes: 8
+    master_port: 29587
+    no_visualize: true
+    causal_config_overrides:
+      wandb_project: LightEWM-LIBERO-HDR-VideoActionJoint
+      train_timer: true
+      train_timer_first_steps: 5
+      train_timer_interval: 10
+      train_timer_sync_cuda: true
+      height: 224
+      width: 224
+      num_frames: 49
+      batch_size: 1
+      total_batch_size: 8
+      num_workers: 4
+      sharding_strategy: full
+      variable_num_frames_train: false
+      max_training_video_frames: 49
+      action_use_video_latent_cache: false
+      vertical_leaf_frames: 13
+      vertical_level_sizes: [1, 2, 4, 8, 13]
+      vertical_step_budgets: [7, 11, 18, 31, 50]
+      action_training: true
+      video_action_joint_training: true
+      action_video_fsdp: true
+      generator_fsdp_wrap_strategy: none
+      joint_window_frames: 52
+      joint_source_fps: 16.0
+      joint_target_fps: 16.0
+      joint_video_frame_stride: 4
+      joint_camera_key: agentview_rgb
+      joint_local_video_tokens: 4
+      joint_tree_video_loss_weight: 1.0
+      joint_local_video_loss_weight: 1.0
+      joint_action_loss_weight: 1.0
+      joint_detach_action_video_kv: true
+      action_train_shift: 5.0
+      action_infer_shift: 5.0
+      lr: 5.0e-6
+      beta1: 0.9
+      beta2: 0.95
+      max_grad_norm: 1.0
+      lr_schedule: linear_warmup_cosine
+      lr_warmup_steps: 5000
+      lr_total_steps: 100000
+      lr_min_ratio: 0.01
+      max_train_steps: 100000
+      action_new_lr: 3.0e-5
+      actions_per_leaf: 52
+      action_stats_path: data/libero_i2v_train/hdr_video_action_joint_action_stats.json
+      generator_ckpt: logs/LIBERO-HDR_train/20260603_041919/checkpoint_model_370000/model.pt
+      action_dit_init_from_video: true
+      action_dit_alpha_scaling: true
+      action_dit_config:
+        action_dim: 7
+        hidden_dim: 1024
+        ffn_dim: 4096
+        freq_dim: 256
+        eps: 1.0e-6
+        actions_per_leaf: 52
+        action_attend_video: all
+        use_gradient_checkpointing: true
+      model_kwargs:
+        timestep_shift: 1.0
+        seq_len: 1372
+
+dataset:
+  class_path: lightewm.dataset.causal_forcing.CausalForcingJsonlAdapter
+  params:
+    base_path: data/libero_i2v_train
+    metadata_path: data/libero_i2v_train/metadata_dense_prompt_hdr_video_action_joint.csv
+    video_key: video
+    prompt_key: dense_prompt
+    fallback_prompt_keys: [prompt, sparse_prompt]
+    filter_key: camera_key
+    filter_value: agentview_rgb

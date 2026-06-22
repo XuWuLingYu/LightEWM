@@ -1,5 +1,7 @@
 from typing import Tuple
+import json
 import time
+from pathlib import Path
 import torch
 
 from model.base import BaseModel
@@ -164,7 +166,7 @@ class CausalDiffusion(BaseModel):
             self.vertical_token_step_budgets = None
             self.vertical_reference_scheduler = None
             self.vertical_reference_timesteps = None
-
+        
         # Noise augmentation in teacher forcing, we add small noise to clean context latents
         self.noise_augmentation_max_timestep = getattr(args, "noise_augmentation_max_timestep", 0)
         self.action_training = bool(getattr(args, "action_training", False))
@@ -179,6 +181,7 @@ class CausalDiffusion(BaseModel):
         self.joint_action_video_kv_scale = float(getattr(args, "joint_action_video_kv_scale", 1.0))
         self.joint_action_fixed_timestep = getattr(args, "joint_action_fixed_timestep", None)
         self.joint_drop_tree_tokens = bool(getattr(args, "joint_drop_tree_tokens", False))
+        self.joint_tree_num_levels = int(getattr(args, "joint_tree_num_levels", 0) or 0)
         self.actions_per_leaf = int(getattr(args, "actions_per_leaf", 8))
         self.action_train_shift = float(getattr(args, "action_train_shift", 5.0))
         self.action_infer_shift = float(getattr(args, "action_infer_shift", self.action_train_shift))
@@ -186,6 +189,11 @@ class CausalDiffusion(BaseModel):
             num_train_timesteps=self.num_train_timestep,
             shift=self.action_train_shift,
         )
+        self.local_video_scheduler = WanContinuousFlowMatchScheduler(
+            num_train_timesteps=self.num_train_timestep,
+            shift=self.action_train_shift,
+        )
+        self._init_action_metric_stats(getattr(args, "action_stats_path", None))
         if self.action_training and not self.vertical_hierarchy:
             raise ValueError("action_training currently requires vertical_hierarchy=True.")
         if self.action_training and not self.video_action_joint_training:
@@ -210,6 +218,37 @@ class CausalDiffusion(BaseModel):
                 use_gradient_checkpointing=bool(action_cfg.get("use_gradient_checkpointing", args.gradient_checkpointing)),
                 proprio_dim=action_cfg.get("proprio_dim", None),
             )
+
+    def _init_action_metric_stats(self, stats_path: str | None) -> None:
+        self.action_metric_eps = 1e-6
+        self.action_metric_has_stats = False
+        self.register_buffer("action_metric_min", torch.empty(0, dtype=torch.float32), persistent=False)
+        self.register_buffer("action_metric_max", torch.empty(0, dtype=torch.float32), persistent=False)
+        if not stats_path:
+            return
+        path = Path(str(stats_path))
+        candidates = [path, Path.cwd() / path]
+        cwd_parents = list(Path.cwd().parents)
+        if len(cwd_parents) >= 3:
+            candidates.append(cwd_parents[2] / path)
+        resolved = next((candidate for candidate in candidates if candidate.exists()), None)
+        if resolved is None:
+            return
+        with resolved.open("r", encoding="utf-8") as f:
+            stats = json.load(f)
+        min_v = torch.tensor(stats["min"], dtype=torch.float32, device=self.device)
+        max_v = torch.tensor(stats["max"], dtype=torch.float32, device=self.device)
+        self.action_metric_min = min_v
+        self.action_metric_max = max_v
+        self.action_metric_eps = float(stats.get("eps", 1e-6))
+        self.action_metric_has_stats = True
+
+    def _denormalize_action_for_metrics(self, actions: torch.Tensor) -> torch.Tensor:
+        if not self.action_metric_has_stats:
+            return actions.float()
+        min_v = self.action_metric_min.to(device=actions.device, dtype=torch.float32)
+        max_v = self.action_metric_max.to(device=actions.device, dtype=torch.float32)
+        return (actions.float() + 1.0) * 0.5 * (max_v - min_v + self.action_metric_eps) + min_v
 
     def _build_action_cache_video_timestep(self, vertical_latents: torch.Tensor) -> torch.Tensor:
         if self.vertical_token_step_budgets is None:
@@ -243,7 +282,7 @@ class CausalDiffusion(BaseModel):
 
         self.vae = WanVAEWrapper(model_name=model_name, model_root=model_root)
         self.vae.requires_grad_(False)
-
+        
         self.scheduler = self.generator.get_scheduler()
         self.scheduler.timesteps = self.scheduler.timesteps.to(device)
 
@@ -388,25 +427,20 @@ class CausalDiffusion(BaseModel):
                     local_video_clean = local_video_clean[:, : self.joint_local_video_tokens]
 
                 local_video_noise = torch.randn_like(local_video_clean)
-                local_video_index = torch.randint(
-                    0,
-                    self.scheduler.timesteps.shape[0],
-                    [batch_size],
-                    device=self.device,
-                )
-                local_video_timestep_sample = self.scheduler.timesteps.to(
+                local_video_timestep_sample = self.local_video_scheduler.sample_training_t(
+                    batch_size=batch_size,
                     device=self.device,
                     dtype=self.dtype,
-                )[local_video_index]
+                )
                 local_video_timestep = local_video_timestep_sample[:, None].expand(
                     -1, local_video_clean.shape[1]
                 )
-                local_video_noisy = self.scheduler.add_noise(
+                local_video_noisy = self.local_video_scheduler.add_noise(
                     local_video_clean.flatten(0, 1),
                     local_video_noise.flatten(0, 1),
                     local_video_timestep.flatten(0, 1),
                 ).unflatten(0, (batch_size, local_video_clean.shape[1]))
-                local_video_target = self.scheduler.training_target(
+                local_video_target = self.local_video_scheduler.training_target(
                     local_video_clean,
                     local_video_noise,
                     local_video_timestep,
@@ -436,16 +470,31 @@ class CausalDiffusion(BaseModel):
                         dim=1,
                     )
                 else:
-                    tree_clean_latent = gather_vertical_latents(clean_latent, runtime_vertical_info)
+                    full_tree_clean_latent = gather_vertical_latents(clean_latent, runtime_vertical_info)
+                    full_tree_token_ids = list(range(runtime_vertical_info["num_tokens"]))
+                    full_tree_token_budgets = list(runtime_vertical_token_step_budgets)
+                    if self.joint_tree_num_levels > 0:
+                        if self.joint_tree_num_levels > len(runtime_vertical_info["level_sizes"]):
+                            raise ValueError(
+                                f"joint_tree_num_levels={self.joint_tree_num_levels} exceeds "
+                                f"runtime hierarchy levels={runtime_vertical_info['level_sizes']}."
+                            )
+                        tree_count = int(sum(runtime_vertical_info["level_sizes"][: self.joint_tree_num_levels]))
+                        tree_clean_latent = full_tree_clean_latent[:, :tree_count]
+                        tree_token_ids = full_tree_token_ids[:tree_count]
+                        tree_token_budgets = full_tree_token_budgets[:tree_count]
+                    else:
+                        tree_clean_latent = full_tree_clean_latent
+                        tree_token_ids = full_tree_token_ids
+                        tree_token_budgets = full_tree_token_budgets
                     tree_noise = torch.randn_like(tree_clean_latent)
-                    tree_timestep = self._sample_vertical_timesteps(batch_size, runtime_vertical_token_step_budgets)
+                    tree_timestep = self._sample_vertical_timesteps(batch_size, tree_token_budgets)
                     tree_noisy_latents = self.scheduler.add_noise(
                         tree_clean_latent.flatten(0, 1),
                         tree_noise.flatten(0, 1),
                         tree_timestep.flatten(0, 1),
                     ).unflatten(0, (batch_size, tree_clean_latent.shape[1]))
                     tree_target = self.scheduler.training_target(tree_clean_latent, tree_noise, tree_timestep)
-                    tree_token_ids = list(range(runtime_vertical_info["num_tokens"]))
                     prefix_token_ids = [CONDITION_TOKEN_ID]
                     prefix_for_joint = first_frame_latent
                     prefix_t_for_joint = prefix_t
@@ -551,9 +600,9 @@ class CausalDiffusion(BaseModel):
                 local_video_loss = torch.nn.functional.mse_loss(
                     flow_pred_local.float(), local_video_target.float(), reduction="none"
                 ).mean(dim=(2, 3, 4))
-                local_video_loss = local_video_loss * self.scheduler.training_weight(local_video_timestep).unflatten(
-                    0, (batch_size, local_video_clean.shape[1])
-                )
+                local_video_loss = local_video_loss * self.local_video_scheduler.training_weight(
+                    local_video_timestep_sample
+                )[:, None]
                 local_video_loss = local_video_loss.mean()
 
                 action_loss = torch.nn.functional.mse_loss(
@@ -851,3 +900,161 @@ class CausalDiffusion(BaseModel):
         }
         log_dict.update(timer)
         return loss, log_dict
+
+    @torch.no_grad()
+    def open_loop_action_val(
+        self,
+        *,
+        conditional_dict: dict,
+        clean_latent: torch.Tensor,
+        initial_latent: torch.Tensor,
+        joint_actions: torch.Tensor,
+        joint_local_start_latent: torch.Tensor,
+        joint_local_video_latents: torch.Tensor,
+        joint_proprio: torch.Tensor = None,
+        joint_steps: int = 10,
+    ) -> dict:
+        if not self.video_action_joint_training:
+            raise ValueError("open_loop_action_val requires video_action_joint_training=True.")
+        batch_size = int(joint_actions.shape[0])
+        first_frame_latent = initial_latent if initial_latent is not None else clean_latent[:, :1]
+        frame_seq_len = (
+            clean_latent.shape[-2] // self.generator_patch_size_hw[0]
+        ) * (
+            clean_latent.shape[-1] // self.generator_patch_size_hw[1]
+        )
+        runtime_leaf_frames = int(self.vertical_leaf_frames) if self.joint_drop_tree_tokens else clean_latent.shape[1]
+        runtime_vertical_info, _ = self._get_runtime_vertical(runtime_leaf_frames)
+
+        local_start_clean = joint_local_start_latent.to(device=self.device, dtype=self.dtype)
+        local_video_clean = joint_local_video_latents.to(device=self.device, dtype=self.dtype)
+        if local_video_clean.shape[1] < self.joint_local_video_tokens:
+            pad = local_video_clean[:, -1:].expand(
+                -1,
+                self.joint_local_video_tokens - local_video_clean.shape[1],
+                -1,
+                -1,
+                -1,
+            )
+            local_video_clean = torch.cat([local_video_clean, pad], dim=1)
+        elif local_video_clean.shape[1] > self.joint_local_video_tokens:
+            local_video_clean = local_video_clean[:, : self.joint_local_video_tokens]
+
+        prefix_t = torch.zeros([batch_size, 1], device=self.device, dtype=self.dtype)
+        zero_start_timestep = torch.zeros([batch_size, 1], device=self.device, dtype=self.dtype)
+        if self.joint_drop_tree_tokens:
+            tree_clean_latent = clean_latent.new_zeros(
+                batch_size,
+                0,
+                clean_latent.shape[2],
+                clean_latent.shape[3],
+                clean_latent.shape[4],
+            )
+            tree_timestep = clean_latent.new_zeros(batch_size, 0)
+            tree_token_ids = []
+            prefix_token_ids = []
+            prefix_for_joint = local_start_clean[:, :0]
+            prefix_t_for_joint = prefix_t[:, :0]
+        else:
+            full_tree_clean_latent = gather_vertical_latents(clean_latent, runtime_vertical_info)
+            full_tree_token_ids = list(range(runtime_vertical_info["num_tokens"]))
+            if self.joint_tree_num_levels > 0:
+                tree_count = int(sum(runtime_vertical_info["level_sizes"][: self.joint_tree_num_levels]))
+                tree_clean_latent = full_tree_clean_latent[:, :tree_count]
+                tree_token_ids = full_tree_token_ids[:tree_count]
+            else:
+                tree_clean_latent = full_tree_clean_latent
+                tree_token_ids = full_tree_token_ids
+            tree_timestep = torch.zeros(
+                batch_size,
+                tree_clean_latent.shape[1],
+                device=self.device,
+                dtype=self.dtype,
+            )
+            prefix_token_ids = [CONDITION_TOKEN_ID]
+            prefix_for_joint = first_frame_latent
+            prefix_t_for_joint = prefix_t
+
+        video_scheduler = WanContinuousFlowMatchScheduler(
+            num_train_timesteps=int(self.num_train_timestep),
+            shift=float(self.action_infer_shift),
+        )
+        action_scheduler = WanContinuousFlowMatchScheduler(
+            num_train_timesteps=int(self.num_train_timestep),
+            shift=float(self.action_infer_shift),
+        )
+        video_timesteps, video_deltas = video_scheduler.build_inference_schedule(
+            int(joint_steps), device=self.device, dtype=self.dtype
+        )
+        action_timesteps, action_deltas = action_scheduler.build_inference_schedule(
+            int(joint_steps), device=self.device, dtype=self.dtype
+        )
+
+        local_video = torch.randn_like(local_video_clean)
+        actions = torch.randn_like(joint_actions.to(device=self.device, dtype=self.dtype))
+        joint_video_token_count = len(tree_token_ids) + 1 + self.joint_local_video_tokens
+        joint_proprio = joint_proprio.to(device=self.device, dtype=self.dtype) if joint_proprio is not None else None
+        joint_mot = getattr(self, "joint_mot", None)
+        for video_t, video_delta, action_t, action_delta in zip(
+            video_timesteps, video_deltas, action_timesteps, action_deltas
+        ):
+            video_latents = torch.cat([tree_clean_latent, local_start_clean, local_video], dim=1)
+            video_timestep = torch.cat(
+                [
+                    tree_timestep,
+                    zero_start_timestep,
+                    torch.full(
+                        (batch_size, self.joint_local_video_tokens),
+                        float(video_t),
+                        device=self.device,
+                        dtype=self.dtype,
+                    ),
+                ],
+                dim=1,
+            )
+            kwargs = dict(
+                noisy_actions=actions,
+                action_timestep=torch.full([batch_size], float(action_t), device=self.device, dtype=self.dtype),
+                video_latents=video_latents,
+                video_timestep=video_timestep,
+                conditional_dict=conditional_dict,
+                prefix_x=prefix_for_joint,
+                prefix_t=prefix_t_for_joint,
+                prefix_token_ids=prefix_token_ids,
+                tree_token_ids=tree_token_ids,
+                vertical_info=runtime_vertical_info,
+                vertical_use_representative_rope=self.vertical_use_representative_rope,
+                local_start_count=1,
+                local_video_count=self.joint_local_video_tokens,
+                detach_action_video_kv=True,
+                action_attend_video=self.joint_action_attend_video,
+                action_video_kv_scale=self.joint_action_video_kv_scale,
+                joint_proprio=joint_proprio,
+                seq_len_override=joint_video_token_count * frame_seq_len,
+            )
+            if joint_mot is None:
+                flow_pred_video, flow_pred_action = self.action_dit.forward_video_action_joint(**kwargs)
+            else:
+                flow_pred_video, flow_pred_action = joint_mot(**kwargs)
+            local_flow = flow_pred_video[
+                :,
+                len(tree_token_ids) + 1: len(tree_token_ids) + 1 + self.joint_local_video_tokens,
+            ]
+            local_video = video_scheduler.step(local_flow, video_delta, local_video)
+            actions = action_scheduler.step(flow_pred_action, action_delta, actions)
+
+        gt = joint_actions.to(device=self.device, dtype=torch.float32)
+        pred = actions.float()
+        diff = pred - gt
+        raw_gt = self._denormalize_action_for_metrics(gt)
+        raw_pred = self._denormalize_action_for_metrics(pred)
+        raw_diff = raw_pred - raw_gt
+        return {
+            "val_action_l1_raw_sum": raw_diff.abs().sum(),
+            "val_action_l2_raw_sum": raw_diff.square().sum(),
+            "val_action_l1_norm_sum": diff.abs().sum(),
+            "val_action_l2_norm_sum": torch.linalg.vector_norm(diff, dim=-1).sum(),
+            "val_action_mse_norm_sum": diff.square().sum(),
+            "val_action_count": torch.tensor(float(diff.numel()), device=self.device),
+            "val_action_step_count": torch.tensor(float(diff.shape[0] * diff.shape[1]), device=self.device),
+        }
