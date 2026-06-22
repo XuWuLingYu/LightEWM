@@ -235,9 +235,7 @@ class WanContinuousFlowMatchScheduler:
         y = torch.exp(-2.0 * ((t - (steps / 2.0)) / steps) ** 2)
         y_shifted = y - self._y_min
         weight = y_shifted / (self._weight_norm_const + self.eps)
-        if weight.numel() == 1:
-            return weight.reshape(())
-        return weight
+        return weight.reshape(-1) if weight.ndim == 0 else weight
 
     def add_noise(self, original_samples, noise, timestep):
         sigma = (timestep / float(self.num_train_timesteps)).to(

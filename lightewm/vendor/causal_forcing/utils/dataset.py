@@ -140,7 +140,7 @@ def _rgb_frames_to_tensor(frames: np.ndarray, height: int, width: int) -> torch.
     return torch.stack(tensors, dim=1)
 
 
-def _load_libero_camera_frames(obs, camera_keys: str | list[str], video_indices: np.ndarray) -> np.ndarray:
+def _parse_camera_keys(camera_keys: str | list[str]) -> list[str]:
     if isinstance(camera_keys, str):
         stripped = camera_keys.strip()
         if stripped.startswith("[") and stripped.endswith("]"):
@@ -154,8 +154,29 @@ def _load_libero_camera_frames(obs, camera_keys: str | list[str], video_indices:
                 camera_keys = [part.strip().strip("'\"") for part in stripped.strip("[]").split(",") if part.strip()]
         else:
             camera_keys = [part.strip() for part in camera_keys.split(",") if part.strip()]
+    else:
+        camera_keys = list(camera_keys)
     if not camera_keys:
         raise ValueError("At least one LIBERO camera key is required.")
+    return [str(camera_key) for camera_key in camera_keys]
+
+
+def _resize_rgb_frames(frames: np.ndarray, height: int, width: int) -> np.ndarray:
+    frames = np.asarray(frames)
+    if frames.dtype != np.uint8:
+        frames = np.clip(frames, 0, 255).astype(np.uint8)
+    if frames.shape[-1] == 4:
+        frames = frames[..., :3]
+    resized = []
+    for frame in frames:
+        image = Image.fromarray(frame).convert("RGB")
+        image = _resize_to_target(image, height, width)
+        resized.append(np.asarray(image))
+    return np.stack(resized, axis=0)
+
+
+def _load_libero_camera_frames(obs, camera_keys: str | list[str], video_indices: np.ndarray) -> np.ndarray:
+    camera_keys = _parse_camera_keys(camera_keys)
 
     camera_frames = []
     for camera_key in camera_keys:
@@ -168,6 +189,51 @@ def _load_libero_camera_frames(obs, camera_keys: str | list[str], video_indices:
     if len(camera_frames) == 1:
         return camera_frames[0]
     return np.concatenate(camera_frames, axis=2)
+
+
+def _load_libero_camera_tensor(
+    obs,
+    camera_keys: str | list[str],
+    video_indices: np.ndarray,
+    height: int,
+    width: int,
+) -> torch.Tensor:
+    """Load LIBERO camera frames as FastWAM-style per-camera squares.
+
+    For two-camera LIBERO, FastWAM resizes each camera to 224x224 and then
+    concatenates horizontally into a 224x448 frame. Resizing a single
+    agentview image into 224x448 is a data bug, so this path rejects that
+    shape when only one camera is requested.
+    """
+    camera_keys = _parse_camera_keys(camera_keys)
+    num_cameras = len(camera_keys)
+    if num_cameras == 1:
+        if int(width) != int(height):
+            raise ValueError(
+                f"Single-camera LIBERO input must stay square, got height={height}, width={width}. "
+                "Use two camera keys for FastWAM-style 224x448 inputs."
+            )
+        frames = _load_libero_camera_frames(obs, camera_keys, video_indices)
+        return _rgb_frames_to_tensor(frames, height, width)
+
+    if int(width) % num_cameras != 0:
+        raise ValueError(f"width={width} must be divisible by num_cameras={num_cameras}.")
+    per_camera_width = int(width) // num_cameras
+    if per_camera_width != int(height):
+        raise ValueError(
+            f"FastWAM-style LIBERO multi-camera input expects square views, got "
+            f"height={height}, per_camera_width={per_camera_width}, cameras={camera_keys}."
+        )
+
+    camera_frames = []
+    for camera_key in camera_keys:
+        if camera_key not in obs:
+            raise KeyError(f"Camera key `{camera_key}` not found. Available={list(obs.keys())}")
+        frames = np.asarray(obs[camera_key][video_indices])
+        frames = frames[:, ::-1, ::-1, :]
+        camera_frames.append(_resize_rgb_frames(frames, int(height), per_camera_width))
+    merged = np.concatenate(camera_frames, axis=2)
+    return _rgb_frames_to_tensor(merged, int(height), int(width))
 
 
 _ACTION_STATS_CACHE: dict[str, dict] = {}
@@ -330,17 +396,37 @@ def _load_libero_joint_window(
         if video_indices.shape[0] < expected_video_frames:
             pad = np.full(expected_video_frames - video_indices.shape[0], video_indices[-1], dtype=np.int64)
             video_indices = np.concatenate([video_indices, pad], axis=0)
-        frames = _load_libero_camera_frames(obs, camera_keys, video_indices)
+        joint_local_frames = _load_libero_camera_tensor(obs, camera_keys, video_indices, height, width)
         actions = np.asarray(raw_actions[window_indices], dtype=np.float32)
         proprio = _extract_libero_proprio(obs, int(window_indices[0]))
     return {
-        "joint_local_frames": _rgb_frames_to_tensor(frames, height, width),
+        "joint_local_frames": joint_local_frames,
         "joint_actions": torch.from_numpy(_normalize_actions(actions, stats_path, norm_clip=norm_clip)).float(),
         "joint_proprio": torch.from_numpy(_normalize_vector(proprio, proprio_stats_path, norm_clip=norm_clip)).float(),
         "joint_window_start": torch.tensor(start, dtype=torch.long),
         "joint_window_indices": torch.from_numpy(window_indices.astype(np.int64)),
         "joint_video_indices": torch.from_numpy(video_indices.astype(np.int64)),
     }
+
+
+def _load_libero_episode_frames(
+    *,
+    source_file: Path,
+    demo_id: str,
+    height: int,
+    width: int,
+    num_frames: int,
+    camera_key: str | list[str],
+) -> torch.Tensor:
+    with h5py.File(source_file, "r") as f:
+        demo = f["data"][demo_id]
+        obs = demo["obs"]
+        camera_keys = _parse_camera_keys(camera_key)
+        if camera_keys[0] not in obs:
+            raise KeyError(f"Camera key `{camera_keys[0]}` not found in {source_file}:{demo_id}. Available={list(obs.keys())}")
+        frame_count = int(obs[camera_keys[0]].shape[0])
+        frame_ids = np.asarray(_sample_video_frame_ids(frame_count, int(num_frames)), dtype=np.int64)
+        return _load_libero_camera_tensor(obs, camera_keys, frame_ids, height, width)
 
 
 def _load_video_latent_cache(cache_path: Path) -> dict[str, torch.Tensor]:
@@ -360,6 +446,36 @@ def _load_video_latent_cache(cache_path: Path) -> dict[str, torch.Tensor]:
     if "video_timestep" in loaded:
         payload["video_timestep"] = torch.from_numpy(loaded["video_timestep"]).float()
     return payload
+
+
+def _load_preencoded_joint_cache(cache_path: Path) -> dict:
+    loaded = torch.load(cache_path, map_location="cpu", weights_only=False)
+    if not isinstance(loaded, dict):
+        raise TypeError(f"Preencoded cache must be a dict, got {type(loaded)} in {cache_path}")
+
+    def _tensor(name: str, required: bool = True):
+        value = loaded.get(name)
+        if value is None:
+            if required:
+                raise KeyError(f"Preencoded cache missing `{name}`: {cache_path}")
+            return None
+        if not torch.is_tensor(value):
+            value = torch.as_tensor(value)
+        return value.float()
+
+    batch = {
+        "clean_latent": _tensor("clean_latent"),
+        "joint_local_start_latent": _tensor("joint_local_start_latent"),
+        "joint_local_video_latents": _tensor("joint_local_video_latents"),
+        "joint_actions": _tensor("joint_actions"),
+        "joint_proprio": _tensor("joint_proprio"),
+        "prompt_embeds": _tensor("prompt_embeds"),
+    }
+    for key in ("joint_window_start", "joint_window_indices", "joint_video_indices"):
+        value = loaded.get(key)
+        if value is not None:
+            batch[key] = value if torch.is_tensor(value) else torch.as_tensor(value)
+    return batch
 
 
 class TextDataset(Dataset):
@@ -405,6 +521,8 @@ class TextVideoDataset(Dataset):
         joint_include_terminal_video_frame: bool = False,
         joint_norm_clip: float = 1.0,
         joint_drop_tree_tokens: bool = False,
+        joint_tree_from_hdf5: bool = False,
+        joint_tree_camera_key: str | None = None,
         joint_proprio_stats_path: str | None = None,
     ):
         self.metadata_path = Path(metadata_path)
@@ -419,10 +537,12 @@ class TextVideoDataset(Dataset):
         self.joint_source_fps = float(joint_source_fps)
         self.joint_target_fps = float(joint_target_fps)
         self.joint_video_frame_stride = int(joint_video_frame_stride)
-        self.joint_camera_key = str(joint_camera_key)
+        self.joint_camera_key = joint_camera_key
         self.joint_include_terminal_video_frame = bool(joint_include_terminal_video_frame)
         self.joint_norm_clip = float(joint_norm_clip)
         self.joint_drop_tree_tokens = bool(joint_drop_tree_tokens)
+        self.joint_tree_from_hdf5 = bool(joint_tree_from_hdf5)
+        self.joint_tree_camera_key = joint_tree_camera_key if joint_tree_camera_key is not None else self.joint_camera_key
         self.joint_proprio_stats_path = joint_proprio_stats_path
         self._jsonl_file = None
 
@@ -480,9 +600,11 @@ class TextVideoDataset(Dataset):
         prompt = item.get("prompt", item.get("caption"))
         if prompt is None:
             raise KeyError("Each metadata item must contain `prompt`.")
+        preencoded_cache_path = item.get("preencoded_cache_path")
         video_path = item.get("video_path", item.get("video"))
         skip_tree_video = self.video_action_joint and self.joint_drop_tree_tokens
-        if video_path is None and not skip_tree_video:
+        tree_from_hdf5 = self.video_action_joint and self.joint_tree_from_hdf5 and not skip_tree_video
+        if video_path is None and not skip_tree_video and not tree_from_hdf5:
             raise KeyError("Each metadata item must contain `video_path`.")
         video_path = self._resolve_video_path(video_path) if video_path is not None else None
         video_latent_cache_path = item.get("video_latent_cache_path")
@@ -494,10 +616,34 @@ class TextVideoDataset(Dataset):
         for metadata_key in ("demo_id", "camera_key"):
             if metadata_key in item:
                 batch[metadata_key] = item[metadata_key]
+        if preencoded_cache_path is not None:
+            resolved_cache_path = _resolve_path(self.base_dir, str(preencoded_cache_path))
+            batch.update(_load_preencoded_joint_cache(resolved_cache_path))
+            batch["preencoded_cache_path"] = str(resolved_cache_path)
+            batch["num_frames"] = int(batch["clean_latent"].shape[0])
+            return batch
+        source_file = item.get("source_file")
+        demo_id = item.get("demo_id")
         if skip_tree_video:
             if video_path is not None:
                 batch["video_path"] = str(video_path)
             batch["num_frames"] = 0
+        elif tree_from_hdf5:
+            if source_file is None or demo_id is None:
+                raise KeyError("joint_tree_from_hdf5 requires `source_file` and `demo_id` in each item.")
+            frames = _load_libero_episode_frames(
+                source_file=_resolve_path(self.base_dir, str(source_file)),
+                demo_id=str(demo_id),
+                height=self.height,
+                width=self.width,
+                num_frames=int(self.num_frames),
+                camera_key=self.joint_tree_camera_key,
+            )
+            batch.update({
+                "frames": frames,
+                "video_path": str(video_path) if video_path is not None else "",
+                "num_frames": frames.shape[1],
+            })
         else:
             frames = _load_video_as_tensor(
                 video_path=video_path,
@@ -527,8 +673,6 @@ class TextVideoDataset(Dataset):
             batch.update(_load_video_latent_cache(resolved_cache_path))
             batch["video_latent_cache_path"] = str(resolved_cache_path)
         if self.video_action_joint:
-            source_file = item.get("source_file")
-            demo_id = item.get("demo_id")
             if source_file is None or demo_id is None:
                 raise KeyError("video_action_joint dataset requires `source_file` and `demo_id` in each item.")
             stats_path = item.get("action_stats_path")

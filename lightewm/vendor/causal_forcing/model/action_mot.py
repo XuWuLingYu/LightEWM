@@ -885,6 +885,10 @@ class HDRActionMoT(nn.Module):
         return mask
 
     @staticmethod
+    def _action_full_video_mask(action_len: int, video_len: int, device) -> torch.Tensor:
+        return torch.ones((action_len, video_len + action_len), dtype=torch.bool, device=device)
+
+    @staticmethod
     def _action_self_only_mask(action_len: int, video_len: int, device) -> torch.Tensor:
         mask = torch.zeros((action_len, video_len + action_len), dtype=torch.bool, device=device)
         mask[:, video_len:] = True
@@ -931,26 +935,32 @@ class HDRActionMoT(nn.Module):
                 if allowed_sequence_index is not None:
                     allowed_frames[sequence_index, allowed_sequence_index] = True
 
-        leaf_sequence_indices = [
-            token_id_to_sequence_index[token_id]
-            for token_id in vertical_info["leaf_token_ids"]
-            if token_id in token_id_to_sequence_index
-        ]
+        third_level_tree_indices = []
+        level_offsets = list(vertical_info.get("level_offsets", []))
+        level_sizes = list(vertical_info.get("level_sizes", []))
+        if len(level_offsets) >= 3 and len(level_sizes) >= 3:
+            third_level_start = int(level_offsets[2])
+            third_level_end = third_level_start + int(level_sizes[2])
+            for token_id in tree_token_ids:
+                if third_level_start <= int(token_id) < third_level_end:
+                    sequence_index = token_id_to_sequence_index.get(token_id)
+                    if sequence_index is not None:
+                        third_level_tree_indices.append(sequence_index)
+
         for offset in range(local_start_count):
             row = local_start_sequence_index + offset
             allowed_frames[row, row] = True
-            for leaf_sequence_index in leaf_sequence_indices:
-                allowed_frames[row, leaf_sequence_index] = True
+            for col in third_level_tree_indices:
+                allowed_frames[row, col] = True
 
         local_video_indices = list(
             range(local_video_start_sequence_index, local_video_start_sequence_index + local_video_count)
         )
         for row in local_video_indices:
             allowed_frames[row, local_start_sequence_index:local_start_sequence_index + local_start_count] = True
-            for col in local_video_indices:
+            allowed_frames[row, row] = True
+            for col in third_level_tree_indices:
                 allowed_frames[row, col] = True
-            for leaf_sequence_index in leaf_sequence_indices:
-                allowed_frames[row, leaf_sequence_index] = True
 
         token_frame_ids = torch.zeros(total_length + padded_length, device=device, dtype=torch.long)
         valid_positions = torch.zeros(total_length + padded_length, device=device, dtype=torch.bool)
@@ -1352,20 +1362,30 @@ class HDRActionMoT(nn.Module):
 
         x_video = video_state["tokens"]
         frame_seqlen = int(video_state["frame_seqlen"])
-        local_start_sequence_index = int(video_state["local_start_sequence_index"])
-        local_start_seq_start = local_start_sequence_index * frame_seqlen
-        local_start_seq_end = local_start_seq_start + int(local_start_count) * frame_seqlen
-        local_start_video_len = local_start_seq_end - local_start_seq_start
         if action_attend_video == "none":
+            local_start_seq_start = 0
+            local_start_seq_end = x_video.shape[1]
             action_video_mask = self._action_self_only_mask(
+                action_seq_len,
+                x_video.shape[1],
+                x_action.device,
+            )
+        elif action_attend_video == "local_start":
+            local_start_sequence_index = int(video_state["local_start_sequence_index"])
+            local_start_seq_start = local_start_sequence_index * frame_seqlen
+            local_start_seq_end = local_start_seq_start + int(local_start_count) * frame_seqlen
+            local_start_video_len = local_start_seq_end - local_start_seq_start
+            action_video_mask = self._action_local_start_mask(
                 action_seq_len,
                 local_start_video_len,
                 x_action.device,
             )
-        elif action_attend_video == "local_start":
-            action_video_mask = self._action_local_start_mask(
+        elif action_attend_video in ("all", "full_video", "fastwam_joint"):
+            local_start_seq_start = 0
+            local_start_seq_end = x_video.shape[1]
+            action_video_mask = self._action_full_video_mask(
                 action_seq_len,
-                local_start_video_len,
+                x_video.shape[1],
                 x_action.device,
             )
         else:
@@ -1430,7 +1450,7 @@ class HDRActionMoT(nn.Module):
                 video_state["context"],
                 video_state["context_lens"],
                 local_context=video_state["local_context"],
-                local_context_start=local_start_seq_start,
+                local_context_start=int(video_state["local_start_sequence_index"]) * frame_seqlen,
             )
         if debug_video_kv and debug_kv_stats:
             print(

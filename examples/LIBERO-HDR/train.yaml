@@ -35,5 +35,5 @@ dataset:
     base_path: data/libero_i2v_train
     metadata_path: data/libero_i2v_train/metadata_dense_prompt.csv
     video_key: video
-    prompt_key: prompt
-    fallback_prompt_keys: [dense_prompt, sparse_prompt]
+    prompt_key: dense_prompt
+    fallback_prompt_keys: [prompt, sparse_prompt]
