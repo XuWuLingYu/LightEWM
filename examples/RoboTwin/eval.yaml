@@ -1,0 +1,12 @@
+task: eval
+
+runner:
+  class_path: lightewm.runner.robotwin.RoboTwinRunner
+  params:
+    output_dir: ./outputs/robotwin_eval
+    artifact_type: robotwin_rollout
+    metrics: [success_rate]
+    video_pattern: "*.mp4"
+    # Optional: launch RoboTwin directly from LightEWM.
+    # command: [python, deploy_policy.py, --output-dir, ./outputs/robotwin_eval]
+    # cwd: /path/to/robotwin

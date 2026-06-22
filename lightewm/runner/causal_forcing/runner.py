@@ -236,14 +236,17 @@ class CausalForcingRunner:
             task=self._task(),
             generated_dir=str(run_root),
             artifact_type="video" if self._task() == "infer" else "training_log",
-            metadata_path=dataset_params.get("metadata_path"),
-            dataset_base_path=dataset_params.get("base_path"),
+            metadata_path=str(jsonl_path) if self._task() == "infer" else dataset_params.get("metadata_path"),
+            dataset_base_path=str(jsonl_path.parent) if self._task() == "infer" else dataset_params.get("base_path"),
             fps=params.get("fps"),
             num_frames=causal_overrides.get("num_frames"),
             extra={
                 "backend_root": str(backend_root),
                 "config_path": str(config_path),
                 "jsonl_path": str(jsonl_path),
+                "source_metadata_path": dataset_params.get("metadata_path"),
+                "source_dataset_base_path": dataset_params.get("base_path"),
+                "video_key": "video_path" if self._task() == "infer" else None,
             },
         )
         manifest_path = result.write_manifest(run_root)

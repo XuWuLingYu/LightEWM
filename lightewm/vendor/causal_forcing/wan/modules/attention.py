@@ -88,8 +88,14 @@ def flash_attention(
     def half(x):
         return x if x.dtype in half_dtypes else x.to(dtype)
 
-    use_flash_attn_4 = FLASH_ATTN_4_AVAILABLE and not FLASH_ATTN_2_AVAILABLE and not FLASH_ATTN_3_AVAILABLE and dropout_p == 0
-    if not FLASH_ATTN_2_AVAILABLE and not FLASH_ATTN_3_AVAILABLE and not use_flash_attn_4:
+    use_flash_attn_3 = (
+        (version is None or version == 3)
+        and FLASH_ATTN_3_AVAILABLE
+        and window_size == (-1, -1)
+        and dropout_p == 0
+    )
+    use_flash_attn_4 = FLASH_ATTN_4_AVAILABLE and not FLASH_ATTN_2_AVAILABLE and not use_flash_attn_3 and dropout_p == 0
+    if not FLASH_ATTN_2_AVAILABLE and not use_flash_attn_3 and not use_flash_attn_4:
         if _has_real_padding(q_lens, lq) or _has_real_padding(k_lens, lk) or window_size != (-1, -1):
             raise RuntimeError(
                 'scaled_dot_product_attention fallback does not preserve varlen padding '
@@ -134,13 +140,14 @@ def flash_attention(
     if q_scale is not None:
         q = q * q_scale
 
-    if version is not None and version == 3 and not FLASH_ATTN_3_AVAILABLE:
+    if version is not None and version == 3 and not use_flash_attn_3:
         warnings.warn(
-            'Flash attention 3 is not available; using another available flash attention backend if present.'
+            'Flash attention 3 is unavailable or unsupported for this call; '
+            'using another available flash attention backend if present.'
         )
 
     # apply attention
-    if (version is None or version == 3) and FLASH_ATTN_3_AVAILABLE:
+    if use_flash_attn_3:
         # Note: dropout_p, window_size are not supported in FA3 now.
         x = flash_attn_interface.flash_attn_varlen_func(
             q=q,

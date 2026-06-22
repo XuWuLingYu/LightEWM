@@ -1,8 +1,14 @@
 envs/
+checkpoints
 checkpoints/
+data
 data/
+!lightewm/vendor/fastwam/configs/data/
+!lightewm/vendor/fastwam/configs/data/**
 logs/
 models/
+!lightewm/vendor/fastwam/fastwam/models/
+!lightewm/vendor/fastwam/fastwam/models/**
 third_parties/*
 !third_parties/AnyPos/
 !third_parties/AnyPos/**

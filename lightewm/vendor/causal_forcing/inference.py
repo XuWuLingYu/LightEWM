@@ -86,8 +86,23 @@ def _sanitize_filename(text: str, max_len: int = 100) -> str:
     return safe[:max_len] if safe else "sample"
 
 
-def _build_output_path(output_folder: str, prompt: str, idx: int) -> str:
-    filename = f"{idx:05d}_{_sanitize_filename(prompt)}.mp4"
+def _batch_scalar(batch: dict, key: str, default=None):
+    if key not in batch:
+        return default
+    value = batch[key]
+    if torch.is_tensor(value):
+        return value.item()
+    if isinstance(value, (list, tuple)):
+        return value[0] if value else default
+    return value
+
+
+def _build_output_path(output_folder: str, prompt: str, idx: int, batch: dict | None = None) -> str:
+    batch = batch or {}
+    row_id = int(_batch_scalar(batch, "row_id", idx))
+    demo_id = str(_batch_scalar(batch, "demo_id", _sanitize_filename(prompt)))
+    camera_key = str(_batch_scalar(batch, "camera_key", "unknown"))
+    filename = f"{row_id:06d}__{demo_id}__{camera_key}.mp4"
     return os.path.join(output_folder, filename)
 
 
@@ -268,7 +283,7 @@ for i, batch_data in tqdm(enumerate(dataloader), disable=(local_rank != 0)):
         batch = batch_data[0]  # First (and only) item in the batch
 
     prompt = batch['prompts'][0]
-    output_path = _build_output_path(args.output_folder, prompt, idx)
+    output_path = _build_output_path(args.output_folder, prompt, idx, batch)
     if os.path.exists(output_path):
         print('Video has been generated. Pass!')
         continue

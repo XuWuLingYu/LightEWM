@@ -90,7 +90,8 @@ def collect_video_pairs(
 
     pairs: list[VideoPair] = []
     missing: list[dict] = []
-    for row_id, record in enumerate(records):
+    for local_index, record in enumerate(records):
+        row_id = int(record.get("row_id", local_index))
         try:
             real_path = resolve_dataset_path(dataset_base_path, record.get(video_key))
         except Exception as exc:

@@ -314,6 +314,7 @@ def main():
         generated_dir = generated_dir_overrides.get(weight.name)
         metadata_path = args.metadata_path
         dataset_base_path = args.dataset_base_path
+        video_key = "video"
         artifact_type = "video"
         backend_name = None
 
@@ -322,6 +323,7 @@ def main():
             generated_dir = Path(manifest.generated_dir)
             metadata_path = manifest.metadata_path or metadata_path
             dataset_base_path = manifest.dataset_base_path or dataset_base_path
+            video_key = str(manifest.extra.get("video_key") or video_key)
             artifact_type = manifest.artifact_type
             backend_name = manifest.backend
             if artifact_type != "video":
@@ -357,6 +359,7 @@ def main():
             fvd_pretrained=not args.fvd_no_pretrained,
             fvd_num_frames=args.fvd_num_frames,
             fvd_image_size=args.fvd_image_size,
+            video_key=video_key,
             strict=not args.allow_missing_pairs,
         )
         summary["backend"] = backend_name

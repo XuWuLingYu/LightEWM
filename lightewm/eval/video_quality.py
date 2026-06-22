@@ -76,6 +76,7 @@ def evaluate_video_quality(
     fvd_pretrained: bool = True,
     fvd_num_frames: int = 16,
     fvd_image_size: int = 112,
+    video_key: str = "video",
     strict: bool = True,
 ) -> dict:
     import torch
@@ -87,6 +88,7 @@ def evaluate_video_quality(
         dataset_base_path=dataset_base_path,
         generated_dir=generated_dir,
         max_samples=max_samples,
+        video_key=video_key,
     )
     if strict and missing:
         preview = missing[:5]
