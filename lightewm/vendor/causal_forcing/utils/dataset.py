@@ -489,7 +489,11 @@ class TextVideoDataset(Dataset):
         batch = {
             "prompts": prompt,
             "idx": idx,
+            "row_id": item.get("row_id", idx),
         }
+        for metadata_key in ("demo_id", "camera_key"):
+            if metadata_key in item:
+                batch[metadata_key] = item[metadata_key]
         if skip_tree_video:
             if video_path is not None:
                 batch["video_path"] = str(video_path)

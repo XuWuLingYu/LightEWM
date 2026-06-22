@@ -1,5 +1,7 @@
 envs/
+checkpoints
 checkpoints/
+data
 data/
 logs/
 models/
