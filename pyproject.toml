@@ -57,7 +57,11 @@ dependencies = [
     "omegaconf",
     "diffusers==0.31.0",
     "lmdb",
-    "open_clip_torch"
+    "open_clip_torch",
+    "huggingface_hub[cli]",
+    "lpips",
+    "scikit-image",
+    "scipy",
 ]
 classifiers = [
     "Programming Language :: Python :: 3",

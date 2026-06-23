@@ -2,13 +2,14 @@ import argparse
 import datetime
 import torch
 import os
+import time
 from omegaconf import OmegaConf
 from tqdm import tqdm
 from torchvision import transforms
-from torchvision.io import write_video
 from einops import rearrange
 import torch.distributed as dist
 from torch.utils.data import DataLoader, Sampler, SequentialSampler
+import imageio.v3 as iio
 
 from pipeline import (
     CausalDiffusionInferencePipeline,
@@ -18,6 +19,12 @@ from utils.dataset import TextDataset, TextImagePairDataset, TextVideoDataset
 from utils.misc import set_seed
 
 from demo_utils.memory import gpu, get_cuda_free_memory_gb, DynamicSwapInstaller
+
+
+def write_video(path, video, fps=16):
+    """Write uint8 THWC video without relying on torchvision.io.write_video."""
+    array = video.detach().cpu().numpy() if torch.is_tensor(video) else video
+    iio.imwrite(path, array, fps=fps)
 
 parser = argparse.ArgumentParser()
 parser.add_argument("--config_path", type=str, help="Path to the config file")
@@ -79,8 +86,23 @@ def _sanitize_filename(text: str, max_len: int = 100) -> str:
     return safe[:max_len] if safe else "sample"
 
 
-def _build_output_path(output_folder: str, prompt: str, idx: int) -> str:
-    filename = f"{idx:05d}_{_sanitize_filename(prompt)}.mp4"
+def _batch_scalar(batch: dict, key: str, default=None):
+    if key not in batch:
+        return default
+    value = batch[key]
+    if torch.is_tensor(value):
+        return value.item()
+    if isinstance(value, (list, tuple)):
+        return value[0] if value else default
+    return value
+
+
+def _build_output_path(output_folder: str, prompt: str, idx: int, batch: dict | None = None) -> str:
+    batch = batch or {}
+    row_id = int(_batch_scalar(batch, "row_id", idx))
+    demo_id = str(_batch_scalar(batch, "demo_id", _sanitize_filename(prompt)))
+    camera_key = str(_batch_scalar(batch, "camera_key", "unknown"))
+    filename = f"{row_id:06d}__{demo_id}__{camera_key}.mp4"
     return os.path.join(output_folder, filename)
 
 
@@ -261,7 +283,7 @@ for i, batch_data in tqdm(enumerate(dataloader), disable=(local_rank != 0)):
         batch = batch_data[0]  # First (and only) item in the batch
 
     prompt = batch['prompts'][0]
-    output_path = _build_output_path(args.output_folder, prompt, idx)
+    output_path = _build_output_path(args.output_folder, prompt, idx, batch)
     if os.path.exists(output_path):
         print('Video has been generated. Pass!')
         continue
@@ -312,6 +334,7 @@ for i, batch_data in tqdm(enumerate(dataloader), disable=(local_rank != 0)):
     )
 
     # Generate 81 frames
+    case_start = time.perf_counter()
     if vertical_hierarchy:
         inference_output = pipeline.inference(
             noise=sampled_noise,
@@ -333,6 +356,7 @@ for i, batch_data in tqdm(enumerate(dataloader), disable=(local_rank != 0)):
         video, vertical_payload = inference_output
     else:
         video = inference_output
+    inference_seconds = time.perf_counter() - case_start
     video = rearrange(video, 'b t c h w -> b t h w c').cpu()
 
     # Final output video
@@ -371,3 +395,12 @@ for i, batch_data in tqdm(enumerate(dataloader), disable=(local_rank != 0)):
     pipeline.vae.clear_cache()
 
     write_video(output_path, video[0], fps=16)
+    total_seconds = time.perf_counter() - case_start
+    if local_rank == 0:
+        print(
+            f"[CausalTiming] idx={idx} "
+            f"inference_seconds={inference_seconds:.6f} "
+            f"total_seconds={total_seconds:.6f} "
+            f"output={output_path}",
+            flush=True,
+        )

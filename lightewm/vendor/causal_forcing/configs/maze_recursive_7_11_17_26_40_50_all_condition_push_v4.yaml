@@ -13,7 +13,7 @@ denoising_loss_type: flow
 mixed_precision: true
 seed: 0
 wandb_host: https://api.wandb.ai
-wandb_key: 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
+wandb_key: ""
 wandb_entity: zezhongqian-xi-an-jiaotong-university
 wandb_project: Wan2.2-5B-vertical-maze-push-v4
 sharding_strategy: hybrid_full
