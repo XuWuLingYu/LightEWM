@@ -10,7 +10,7 @@ logger = get_logger(__name__)
 
 
 class FastWAMJoint(FastWAM):
-    """FastWAM variant where action attends to all video latent tokens."""
+    """FastWAM variant with configurable action-to-video attention."""
 
     @classmethod
     def from_wan22_pretrained(cls, **kwargs):
@@ -44,8 +44,13 @@ class FastWAMJoint(FastWAM):
         )
         # action -> action
         mask[video_seq_len:, video_seq_len:] = True
-        # action -> full video
-        mask[video_seq_len:, :video_seq_len] = True
+        if self.action_attend_video == "full":
+            mask[video_seq_len:, :video_seq_len] = True
+        elif self.action_attend_video == "local_clean_first":
+            first_frame_tokens = min(video_tokens_per_frame, video_seq_len)
+            mask[video_seq_len:, :first_frame_tokens] = True
+        else:
+            raise ValueError(f"Unsupported action_attend_video: {self.action_attend_video}")
         return mask
 
     @torch.no_grad()
