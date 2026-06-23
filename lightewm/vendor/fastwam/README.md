@@ -5,6 +5,23 @@ This directory contains the FastWAM runtime used by the
 LightEWM core tree so training and evaluation do not depend on an external
 FastWAM checkout.
 
+## Upstream Source
+
+Vendored from `https://github.com/yuantianyuan01/FastWAM` at commit
+`45d8e1458921d83f8ad6cf9ce993d371208dabd0` (`Merge pull request #20 from
+yuantianyuan01/dev/fix_gpu_oom`).
+
+Path mapping:
+
+- upstream `src/fastwam/` -> `lightewm/vendor/fastwam/fastwam/`
+- upstream `configs/` -> `lightewm/vendor/fastwam/configs/`
+- upstream `scripts/` -> `lightewm/vendor/fastwam/scripts/`
+- upstream `experiments/libero/` -> `lightewm/vendor/fastwam/experiments/libero/`
+
+When refreshing this vendor copy, compare against the pinned upstream commit
+and keep local LightEWM integration changes separate from upstream source
+updates.
+
 Included pieces:
 
 - `fastwam/`: model, MoT wrapper, data loaders, schedulers, and runtime code.
