@@ -524,7 +524,7 @@ class Trainer:
         self.rtf_ema_ratio = getattr(self.config, "rtf_ema_ratio", 0.9) 
         self.eval_interval = getattr(self.config, "eval_interval", 0)      # 0 => disable
         self.libero_eval_interval = int(getattr(self.config, "libero_eval_interval", 0) or 0)
-        self.libero_eval_script = str(getattr(self.config, "libero_eval_script", "scripts/eval_libero_hdr_video_action_joint_suites.py"))
+        self.libero_eval_script = str(getattr(self.config, "libero_eval_script", "") or "")
         self.libero_eval_metadata = str(getattr(self.config, "libero_eval_metadata", "data/libero_i2v_train/metadata_dense_prompt_hdr_video_action_joint_fastwam_local.csv"))
         self.libero_eval_suites = list(_to_plain_config(getattr(self.config, "libero_eval_suites", ["libero_10"])))
         self.libero_eval_tasks_per_suite = int(getattr(self.config, "libero_eval_tasks_per_suite", 1))
@@ -686,6 +686,14 @@ class Trainer:
         if self.libero_eval_interval <= 0:
             return
         if not self.video_action_joint_training:
+            return
+        if not self.libero_eval_script:
+            if self.is_main_process:
+                print(
+                    "[LiberoEval] libero_eval_interval is enabled but "
+                    "libero_eval_script is not set; skipping.",
+                    flush=True,
+                )
             return
         if not bool(getattr(self, "_last_optimizer_step", True)):
             return
