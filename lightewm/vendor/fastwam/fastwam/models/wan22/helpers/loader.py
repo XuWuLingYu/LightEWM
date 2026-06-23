@@ -185,7 +185,7 @@ def load_wan22_ti2v_5b_components(
             dit_model_config.download_if_necessary()
             dit_path_obj = Path(dit_model_config.path)
         dit = _load_registered_model(
-            dit_path_obj,
+            str(dit_path_obj),
             "wan_video_dit",
             torch_dtype=torch_dtype,
             device=device,
