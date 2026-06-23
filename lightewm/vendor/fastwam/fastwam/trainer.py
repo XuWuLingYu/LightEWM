@@ -42,6 +42,7 @@ class Wan22Trainer:
         self.log_every = int(cfg.log_every)
         self.save_every = int(cfg.save_every)
         self.eval_every = int(cfg.eval_every)
+        self.smoke_eval_step = int(cfg.get("smoke_eval_step", 0))
         self.eval_num_inference_steps = int(cfg.eval_num_inference_steps)
         self.gradient_accumulation_steps = int(cfg.gradient_accumulation_steps)
         self.max_grad_norm = float(cfg.max_grad_norm)
@@ -339,8 +340,18 @@ class Wan22Trainer:
                 action = action.unsqueeze(0)
             if action.ndim != 3:
                 raise ValueError(f"`sample['action']` must be 3D [B, T, a_dim], got shape {tuple(action.shape)}")
-            if action.shape[1] % (num_video_frames - 1) != 0:
-                raise ValueError(f"`sample['action']` temporal dimension must be divisible by video frames-1={num_video_frames - 1}, got {action.shape[1]}")
+            transition_count = sample.get("action_video_transition_count", None)
+            if transition_count is None:
+                transition_count = num_video_frames - 1
+            else:
+                transition_count = int(torch.as_tensor(transition_count).reshape(-1)[0].item())
+            if transition_count <= 0:
+                raise ValueError(f"`action_video_transition_count` must be > 0, got {transition_count}")
+            if action.shape[1] % transition_count != 0:
+                raise ValueError(
+                    "`sample['action']` temporal dimension must be divisible by "
+                    f"action_video_transition_count={transition_count}, got {action.shape[1]}"
+                )
             action_horizon = int(action.shape[1])
 
         proprio = None
@@ -374,6 +385,11 @@ class Wan22Trainer:
             "context_mask": context_mask,
             "action_horizon": action_horizon,
         }
+        if "action_video_transition_count" in sample:
+            batched["action_video_transition_count"] = torch.as_tensor(
+                sample["action_video_transition_count"],
+                dtype=torch.long,
+            ).reshape(1)
         if tree_video is not None:
             if not isinstance(tree_video, torch.Tensor):
                 raise TypeError(f"`sample['tree_video']` must be a torch.Tensor, got {type(tree_video)}")
@@ -751,11 +767,17 @@ class Wan22Trainer:
                             wandb_payload[f"train/{key}"] = value
                         self._wandb_log(wandb_payload)
 
-                    if (
+                    should_eval = (
                         self.eval_every > 0
                         and self.val_dataset is not None
                         and self.global_step % self.eval_every == 0
-                    ):
+                    )
+                    should_smoke_eval = (
+                        self.smoke_eval_step > 0
+                        and self.val_dataset is not None
+                        and self.global_step == self.smoke_eval_step
+                    )
+                    if should_eval or should_smoke_eval:
                         metrics = self.evaluate()
                         self.accelerator.wait_for_everyone()
                         if metrics is not None and self.accelerator.is_main_process:

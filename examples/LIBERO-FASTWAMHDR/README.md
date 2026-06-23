@@ -1,9 +1,19 @@
-# LIBERO FastWAM
+# LIBERO FastWAM HDR
 
-This example runs the vendored FastWAM implementation directly from
+This example starts from the vendored FastWAM implementation directly from
 `lightewm/vendor/fastwam`. The model structure, MoT wrapper, data loader,
 normalizer, action/video schedulers, optimizer, and training loop are part of
 the LightEWM codebase and do not depend on an external FastWAM checkout.
+
+This HDR variant keeps the original 9 local RGB frames first, then appends 4
+special RGB frames sampled uniformly after the local window and through the GT
+episode ending. The HDR sampling interval excludes the local end frame and
+includes the episode tail frame. Keeping local first preserves the original
+clean first latent, while the 13 RGB frames make the noisy latent tail 3 frames
+instead of the original 2.
+
+For the joint action path, action tokens attend only to the local clean first
+latent frame, not to the appended HDR frames.
 
 ## Environment
 
@@ -57,7 +67,7 @@ data/libero_mujoco3.3.2/
 FastWAM trains with cached T5 embeddings. Generate them once:
 
 ```bash
-python run.py --config examples/LIBERO-FASTWAM/precompute_text.yaml
+python run.py --config examples/LIBERO-FASTWAMHDR/precompute_text.yaml
 ```
 
 ## Training
@@ -72,7 +82,7 @@ The training config matches FastWAM's LIBERO joint setup:
 - FastWAM's `224x448` video frame is a horizontal camera concat:
   left `224x224` is agent/external view, right `224x224` is wrist/hand view
 - 33 observations, 32 controller actions
-- video stride 4, producing 9 RGB frames
+- video stride 4, producing 9 local RGB frames, followed by 4 episode-HDR RGB frames
 - per-GPU batch size 16, 8 GPUs, global batch 128
 - learning rate `1e-4`, AdamW betas `(0.9, 0.95)`, weight decay `1e-2`
 - cosine LR schedule with 5% warmup and 1% minimum LR
@@ -80,7 +90,7 @@ The training config matches FastWAM's LIBERO joint setup:
 Run:
 
 ```bash
-python run.py --config examples/LIBERO-FASTWAM/train.yaml
+python run.py --config examples/LIBERO-FASTWAMHDR/train.yaml
 ```
 
 FastWAM writes `dataset_stats.json` in the run directory. Keep it with the
@@ -91,9 +101,9 @@ checkpoint for evaluation.
 Set both checkpoint and dataset stats paths:
 
 ```bash
-python run.py --config examples/LIBERO-FASTWAM/eval.yaml --overrides \
-  runner.params.checkpoint_path=logs/train/LIBERO-FASTWAM/<run>/checkpoints/weights/step_XXXX.pt \
-  runner.params.dataset_stats_path=logs/train/LIBERO-FASTWAM/<run>/dataset_stats.json
+python run.py --config examples/LIBERO-FASTWAMHDR/eval.yaml --overrides \
+  runner.params.checkpoint_path=logs/train/LIBERO-FASTWAMHDR/<run>/checkpoints/weights/step_XXXX.pt \
+  runner.params.dataset_stats_path=logs/train/LIBERO-FASTWAMHDR/<run>/dataset_stats.json
 ```
 
 The evaluation path calls FastWAM's LIBERO evaluator and uses its native action

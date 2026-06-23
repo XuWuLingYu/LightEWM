@@ -210,6 +210,9 @@ class FastWAMProcessor(BaseProcessor):
         # 1. instruction
         sample["instruction"] = self.augment_instruction(data)
         sample["image_is_pad"] = data["image_is_pad"]
+        for meta_key in ("dataset_index", "episode_index", "frame_index", "timestamp"):
+            if meta_key in data:
+                sample[meta_key] = data[meta_key]
 
         # 2. image
         processed_images = []

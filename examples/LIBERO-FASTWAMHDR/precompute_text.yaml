@@ -1,0 +1,25 @@
+task: precompute_text
+
+runner:
+  class_path: lightewm.runner.fastwam.FastWAMRunner
+  params:
+    fastwam_root: lightewm/vendor/fastwam
+    output_path: ./logs/precompute/LIBERO-FASTWAMHDR
+    num_processes: 8
+
+    fastwam_task: libero_joint_2cam224_1e-4
+    fastwam_model: fastwam_joint
+    fastwam_data: libero_2cam
+    model_id: Wan-AI/Wan2.2-TI2V-5B
+    tokenizer_model_id: Wan-AI/Wan2.1-T2V-1.3B
+
+    dataset_dirs:
+      - data/libero_mujoco3.3.2/libero_spatial_no_noops_lerobot
+      - data/libero_mujoco3.3.2/libero_object_no_noops_lerobot
+      - data/libero_mujoco3.3.2/libero_goal_no_noops_lerobot
+      - data/libero_mujoco3.3.2/libero_10_no_noops_lerobot
+    text_embedding_cache_dir: data/text_embeds_cache/libero
+
+    hydra_overrides:
+      - model.redirect_common_files=false
+      - +overwrite=false

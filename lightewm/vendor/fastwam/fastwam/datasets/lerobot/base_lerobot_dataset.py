@@ -213,6 +213,9 @@ class BaseLerobotDataset(torch.utils.data.Dataset):
             "state": {},
             "images": {},
         }
+        for meta_key in ("dataset_index", "episode_index", "frame_index", "timestamp"):
+            if meta_key in lerobot_sample:
+                sample[meta_key] = lerobot_sample[meta_key]
         for meta in self.state_meta:
             sample["state"][meta["key"]] = self._get_state(meta, lerobot_sample)
 
