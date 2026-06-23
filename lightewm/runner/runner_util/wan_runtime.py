@@ -18,6 +18,7 @@ WAN_I2V_DEFAULTS = {
     "dataset_metadata_path": None,
     "dataset_repeat": 1,
     "dataset_num_workers": 0,
+    "max_data_items": None,
     "data_file_keys": "image,video",
     "model_paths": None,
     "model_id_with_origin_paths": None,
@@ -26,6 +27,7 @@ WAN_I2V_DEFAULTS = {
     "offload_models": None,
     "learning_rate": 1e-4,
     "num_epochs": 1,
+    "max_train_steps": None,
     "batch_size": 1,
     "data_seed": 42,
     "trainable_models": None,
@@ -89,7 +91,9 @@ def _coerce_runtime_types(runtime: dict):
     int_keys = {
         "dataset_repeat",
         "dataset_num_workers",
+        "max_data_items",
         "num_epochs",
+        "max_train_steps",
         "batch_size",
         "data_seed",
         "save_steps",
@@ -386,6 +390,7 @@ def build_wan_training_dataset(args, use_data_process_controls=False):
             frame_processor=frame_processor,
             video_sampling_mode=getattr(args, "video_sampling_mode", "prefix"),
         ),
+        max_data_items=args.max_data_items,
         special_operator_map={
             "animate_face_video": ToAbsolutePath(args.dataset_base_path)
             >> LoadVideo(

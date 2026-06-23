@@ -611,7 +611,11 @@ class TextVideoDataset(Dataset):
         batch = {
             "prompts": prompt,
             "idx": idx,
+            "row_id": item.get("row_id", idx),
         }
+        for metadata_key in ("demo_id", "camera_key"):
+            if metadata_key in item:
+                batch[metadata_key] = item[metadata_key]
         if preencoded_cache_path is not None:
             resolved_cache_path = _resolve_path(self.base_dir, str(preencoded_cache_path))
             batch.update(_load_preencoded_joint_cache(resolved_cache_path))

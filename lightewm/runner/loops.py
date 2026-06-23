@@ -163,6 +163,10 @@ def launch_training_task(
     wandb_run = _maybe_init_wandb(args, accelerator)
     wandb_log_every = int(getattr(args, "wandb_log_every", 10)) if args is not None else 10
     global_step = 0
+    max_train_steps = getattr(args, "max_train_steps", None) if args is not None else None
+    if max_train_steps is not None:
+        max_train_steps = int(max_train_steps)
+    stop_training = False
     initialize_deepspeed_gradient_checkpointing(accelerator)
     for epoch_id in range(num_epochs):
         for data in tqdm(dataloader):
@@ -205,10 +209,17 @@ def launch_training_task(
                 if validator is not None:
                     validator.wandb_run = wandb_run
                     validator.maybe_run(accelerator, model, global_step)
+                if max_train_steps is not None and global_step >= max_train_steps:
+                    stop_training = True
+                    break
         if save_steps is None:
             model_logger.on_epoch_end(accelerator, model, epoch_id)
             if wandb_run is not None:
                 wandb_run.log({"train/epoch_end": epoch_id}, step=global_step)
+        if stop_training:
+            if accelerator.is_main_process:
+                print(f"[Train] Reached max_train_steps={max_train_steps}; stopping early.")
+            break
     model_logger.on_training_end(accelerator, model, save_steps)
     if wandb_run is not None:
         wandb_run.finish()

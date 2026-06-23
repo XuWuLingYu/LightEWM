@@ -123,7 +123,10 @@ def write_causal_forcing_jsonl(
     filter_value: str | None = None,
     proprio_stats_path: str | None = None,
 ) -> int:
-    rows = _load_metadata_rows(metadata_path)
+    rows = [
+        {**row, "row_id": row.get("row_id", idx)}
+        for idx, row in enumerate(_load_metadata_rows(metadata_path))
+    ]
     if filter_key is not None:
         rows = [row for row in rows if str(row.get(filter_key, "")) == str(filter_value)]
     if max_samples is not None:
@@ -168,6 +171,7 @@ def write_causal_forcing_jsonl(
                     output_path=output_path,
                     value=str(video_value),
                 ),
+                "row_id": row["row_id"],
             }
             for key in passthrough_path_keys:
                 value = row.get(key)

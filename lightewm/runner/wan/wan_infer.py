@@ -4,6 +4,7 @@ from pathlib import Path
 from tqdm import tqdm
 
 from lightewm.dataset.operators import ImageCropAndResize
+from lightewm.runner.backend_result import BackendRunResult
 from lightewm.runner.runner_util.instantiation import instantiate_component_from_section
 from lightewm.runner.runner_util.wan_runtime import build_wan_i2v_pipeline_from_params
 from lightewm.utils.data import save_video
@@ -62,3 +63,23 @@ class WanInferRunner:
             name = f"{item['row_id']:06d}__{item['demo_id']}__{item['camera_key']}.mp4"
             save_path = str(Path(output_dir) / name)
             save_video(video, save_path, fps=fps, quality=quality)
+
+        dataset_params = (
+            full_config.dataset.params.to_dict()
+            if hasattr(full_config.dataset.params, "to_dict")
+            else dict(full_config.dataset.params)
+        )
+        result = BackendRunResult(
+            backend="wan_ti2v",
+            task=str(getattr(full_config, "task", "infer")),
+            generated_dir=str(output_dir),
+            artifact_type="video",
+            metadata_path=dataset_params.get("metadata_path"),
+            dataset_base_path=dataset_params.get("base_path"),
+            fps=fps,
+            num_frames=infer_kwargs.get("num_frames"),
+            extra={"runner": self.config.class_path},
+        )
+        manifest_path = result.write_manifest(output_dir)
+        print(f"[WanInfer] Wrote backend manifest to {manifest_path}")
+        return result
