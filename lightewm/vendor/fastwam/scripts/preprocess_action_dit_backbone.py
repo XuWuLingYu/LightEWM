@@ -142,6 +142,7 @@ def main() -> None:
     )
     parser.add_argument("--model-config", required=True, help="Path to model yaml, e.g. configs/model/fastwam.yaml")
     parser.add_argument("--output", required=True, help="Output .pt path for preprocessed ActionDiT backbone.")
+    parser.add_argument("--video-dit-pretrained-path", default=None, help="Explicit WanVideoDiT checkpoint source.")
     parser.add_argument("--device", default="cpu", help="Device for loading model and preprocessing.")
     parser.add_argument("--dtype", default="float32", choices=["float32", "float16", "bfloat16"])
     parser.add_argument(
@@ -175,6 +176,7 @@ def main() -> None:
         tokenizer_model_id=cfg.get("tokenizer_model_id", "Wan-AI/Wan2.1-T2V-1.3B"),
         redirect_common_files=redirect_common_files,
         dit_config=video_cfg,
+        dit_pretrained_path=args.video_dit_pretrained_path,
     )
     video_expert = components.dit
 

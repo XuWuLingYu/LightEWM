@@ -38,6 +38,7 @@ class FastWAM(torch.nn.Module):
         action_num_train_timesteps: int = 1000,
         loss_lambda_video: float = 1.0,
         loss_lambda_action: float = 1.0,
+        action_attend_video: str = "full",
     ):
         super().__init__()
         self.video_expert = video_expert
@@ -84,6 +85,7 @@ class FastWAM(torch.nn.Module):
         self.torch_dtype = torch_dtype
         self.loss_lambda_video = float(loss_lambda_video)
         self.loss_lambda_action = float(loss_lambda_action)
+        self.action_attend_video = str(action_attend_video)
 
         self.to(self.device)
 
@@ -100,6 +102,7 @@ class FastWAM(torch.nn.Module):
         redirect_common_files: bool = True,
         video_dit_config: dict[str, Any] | None = None,
         action_dit_config: dict[str, Any] | None = None,
+        video_dit_pretrained_path: str | None = None,
         action_dit_pretrained_path: str | None = None,
         skip_dit_load_from_pretrain: bool = False,
         mot_checkpoint_mixed_attn: bool = True,
@@ -111,6 +114,7 @@ class FastWAM(torch.nn.Module):
         action_num_train_timesteps: int = 1000,
         loss_lambda_video: float = 1.0,
         loss_lambda_action: float = 1.0,
+        action_attend_video: str = "full",
     ):
         if video_dit_config is None:
             raise ValueError("`video_dit_config` is required for FastWAM.from_wan22_pretrained().")
@@ -125,6 +129,7 @@ class FastWAM(torch.nn.Module):
             tokenizer_max_len=tokenizer_max_len,
             redirect_common_files=redirect_common_files,
             dit_config=video_dit_config,
+            dit_pretrained_path=video_dit_pretrained_path,
             skip_dit_load_from_pretrain=skip_dit_load_from_pretrain,
             load_text_encoder=load_text_encoder,
         )
@@ -168,6 +173,7 @@ class FastWAM(torch.nn.Module):
             action_num_train_timesteps=action_num_train_timesteps,
             loss_lambda_video=loss_lambda_video,
             loss_lambda_action=loss_lambda_action,
+            action_attend_video=action_attend_video,
         )
         model.model_paths = {
             "video_dit": components.dit_path,
@@ -305,9 +311,17 @@ class FastWAM(torch.nn.Module):
         if action.ndim != 3:
             raise ValueError(f"`sample['action']` must be 3D [B, T, a_dim], got shape {tuple(action.shape)}")
         action_horizon = int(action.shape[1])
-        if action_horizon % (num_frames - 1) != 0:
+        transition_count = sample.get("action_video_transition_count", None)
+        if transition_count is None:
+            transition_count = num_frames - 1
+        else:
+            transition_count = int(torch.as_tensor(transition_count).reshape(-1)[0].item())
+        if transition_count <= 0:
+            raise ValueError(f"`action_video_transition_count` must be > 0, got {transition_count}")
+        if action_horizon % transition_count != 0:
             raise ValueError(
-                f"`sample['action']` temporal dimension must be divisible by video transitions ({num_frames - 1}), got {action_horizon}"
+                "`sample['action']` temporal dimension must be divisible by "
+                f"video transitions ({transition_count}), got {action_horizon}"
             )
 
         action_is_pad = sample.get("action_is_pad", None)

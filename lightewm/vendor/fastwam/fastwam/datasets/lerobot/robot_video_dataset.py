@@ -6,16 +6,17 @@ import numpy as np
 import traceback
 import torch
 import torchvision.transforms.functional as transforms_F
-from contextlib import contextmanager
 
 from omegaconf import DictConfig, OmegaConf
+from pathlib import Path
 
 from hydra.utils import instantiate
 from .base_lerobot_dataset import BaseLerobotDataset
+from .lerobot.datasets.video_utils import decode_video_frames
 from .utils.normalizer import save_dataset_stats_to_json, load_dataset_stats_from_json
 from ..dataset_utils import ResizeSmallestSideAspectPreserving, CenterCrop, Normalize
 from fastwam.utils.logging_config import get_logger
-from fastwam.utils import misc, pytorch_utils
+from fastwam.utils import misc
 from accelerate import PartialState
 logger = get_logger(__name__)
 
@@ -42,6 +43,11 @@ class RobotVideoDataset(torch.utils.data.Dataset):
         max_padding_retry: int = 3,
         concat_multi_camera: str = "horizontal", # "horizontal", "vertical", "robotwin", or None
         return_tree_video: bool = False,
+        hdr_enabled: bool = False,
+        hdr_local_rgb_frames: int = 9,
+        hdr_tree_rgb_frames: int = 4,
+        hdr_total_rgb_frames: Optional[int] = None,
+        hdr_tree_sampling: str = "uniform_local_start_to_end",
         override_instruction: Optional[str] = None, # whether to hardcode a specific instruction for all samples, for debugging
     ):
         self.lerobot_dataset = BaseLerobotDataset(
@@ -73,6 +79,36 @@ class RobotVideoDataset(torch.utils.data.Dataset):
         self.max_padding_retry = max_padding_retry
         self.concat_multi_camera = concat_multi_camera
         self.return_tree_video = bool(return_tree_video)
+        self.hdr_enabled = bool(hdr_enabled)
+        self.hdr_local_rgb_frames = int(hdr_local_rgb_frames)
+        self.hdr_tree_rgb_frames = int(hdr_tree_rgb_frames)
+        self.hdr_total_rgb_frames = (
+            self.hdr_local_rgb_frames + self.hdr_tree_rgb_frames
+            if hdr_total_rgb_frames is None
+            else int(hdr_total_rgb_frames)
+        )
+        self.hdr_tree_sampling = str(hdr_tree_sampling)
+        if self.hdr_enabled:
+            if self.hdr_local_rgb_frames != len(self.video_sample_indices):
+                raise ValueError(
+                    "FastWAM HDR currently expects the local RGB count to match "
+                    f"`video_sample_indices`, got hdr_local_rgb_frames={self.hdr_local_rgb_frames} "
+                    f"and local_samples={len(self.video_sample_indices)}."
+                )
+            if self.hdr_tree_rgb_frames <= 0:
+                raise ValueError(f"hdr_tree_rgb_frames must be > 0, got {self.hdr_tree_rgb_frames}.")
+            if self.hdr_total_rgb_frames != self.hdr_local_rgb_frames + self.hdr_tree_rgb_frames:
+                raise ValueError(
+                    "hdr_total_rgb_frames must equal hdr_local_rgb_frames + hdr_tree_rgb_frames, "
+                    f"got {self.hdr_total_rgb_frames} vs "
+                    f"{self.hdr_local_rgb_frames}+{self.hdr_tree_rgb_frames}."
+                )
+            if self.hdr_total_rgb_frames % 4 != 1:
+                raise ValueError(
+                    f"hdr_total_rgb_frames must satisfy T % 4 == 1 for Wan VAE tokenization, got {self.hdr_total_rgb_frames}."
+                )
+            if self.hdr_tree_sampling != "uniform_local_start_to_end":
+                raise ValueError(f"Unsupported hdr_tree_sampling: {self.hdr_tree_sampling}.")
         self.override_instruction = override_instruction
 
         self.resize_transform = ResizeSmallestSideAspectPreserving(
@@ -139,20 +175,44 @@ class RobotVideoDataset(torch.utils.data.Dataset):
 
             sample_idx = np.random.randint(len(self.lerobot_dataset))
         
-        image_is_pad = sample["image_is_pad"]
-        tree_image_is_pad = image_is_pad if self.return_tree_video else None
+        image_is_pad_full = sample["image_is_pad"]
+        image_is_pad = image_is_pad_full
+        tree_image_is_pad = image_is_pad_full if self.return_tree_video else None
 
         video = sample["pixel_values"]  # [T, C, H, W] or [num_cameras, T, C, H, W]
         tree_video = video if self.return_tree_video else None
         num_cameras = 1
+        tree_indices = []
+        local_indices = self.video_sample_indices
         if video.ndim == 5:
-            video = video[:, self.video_sample_indices, :, :, :] # [num_cameras, T_video, C, H, W]
+            if self.hdr_enabled:
+                hdr_tree_video, tree_indices = self._load_episode_hdr_tree_video(sample)
+                video = torch.cat([video[:, local_indices, :, :, :], hdr_tree_video], dim=1)
+                video_indices = local_indices + tree_indices
+            else:
+                video_indices = local_indices
+                video = video[:, video_indices, :, :, :] # [num_cameras, T_video, C, H, W]
             num_cameras, T_video, C, H, W = video.shape
         else:
             assert video.ndim == 4, f"Expected video to have shape [T, C, H, W], but got {video.shape}"
-            video = video[self.video_sample_indices, :, :, :] # [T_video, C, H, W]
+            if self.hdr_enabled:
+                hdr_tree_video, tree_indices = self._load_episode_hdr_tree_video(sample)
+                video = torch.cat([video[local_indices, :, :, :], hdr_tree_video], dim=0)
+                video_indices = local_indices + tree_indices
+            else:
+                video_indices = local_indices
+                video = video[video_indices, :, :, :] # [T_video, C, H, W]
             T_video, C, H, W = video.shape
-        image_is_pad = image_is_pad[self.video_sample_indices]
+        local_image_is_pad = image_is_pad_full[local_indices]
+        if self.hdr_enabled:
+            hdr_image_is_pad = torch.zeros(
+                self.hdr_tree_rgb_frames,
+                dtype=local_image_is_pad.dtype,
+                device=local_image_is_pad.device,
+            )
+            image_is_pad = torch.cat([local_image_is_pad, hdr_image_is_pad], dim=0)
+        else:
+            image_is_pad = local_image_is_pad
 
         video = video.view(num_cameras, T_video, C, H, W)  # [num_cameras, T_video, C, H, W]
 
@@ -224,9 +284,10 @@ class RobotVideoDataset(torch.utils.data.Dataset):
         proprio = sample["proprio"][:-1, :] # [T-1, state_dim]， to align with action
         if video.shape[1] <= 1:
             raise ValueError(f"`video` must have at least 2 frames, got shape {tuple(video.shape)}")
-        if action.shape[0] % (video.shape[1] - 1) != 0:
+        action_video_transition_count = len(local_indices) - 1 if self.hdr_enabled else video.shape[1] - 1
+        if action.shape[0] % action_video_transition_count != 0:
             raise ValueError(
-                f"`action` horizon must be divisible by `video` transitions, got {action.shape[0]} and {video.shape[1] - 1}"
+                f"`action` horizon must be divisible by local video transitions, got {action.shape[0]} and {action_video_transition_count}"
             )
 
         task = sample["instruction"]
@@ -252,10 +313,68 @@ class RobotVideoDataset(torch.utils.data.Dataset):
             "action_is_pad": sample["action_is_pad"],
             "proprio_is_pad": sample["proprio_is_pad"],
         }
+        if self.hdr_enabled:
+            data["local_video_frames"] = torch.tensor(len(local_indices), dtype=torch.long)
+            data["action_video_transition_count"] = torch.tensor(action_video_transition_count, dtype=torch.long)
+            data["hdr_tree_frame_indices"] = torch.tensor(tree_indices, dtype=torch.long)
+            data["hdr_local_frame_indices"] = torch.tensor(local_indices, dtype=torch.long)
         if tree_video is not None:
             data["tree_video"] = tree_video
             data["tree_image_is_pad"] = tree_image_is_pad
         return data
+
+    def _get_hdr_tree_indices(self, local_end: int, episode_end_exclusive: int) -> list[int]:
+        first_candidate = local_end + 1
+        if episode_end_exclusive <= first_candidate:
+            return [int(local_end)] * self.hdr_tree_rgb_frames
+        if self.hdr_tree_rgb_frames == 1:
+            return [episode_end_exclusive - 1]
+        tail = episode_end_exclusive - 1 - local_end
+        raw = [
+            np.ceil(local_end + tail * (i + 1) / self.hdr_tree_rgb_frames)
+            for i in range(self.hdr_tree_rgb_frames)
+        ]
+        indices = np.asarray(raw, dtype=np.int64).clip(first_candidate, episode_end_exclusive - 1).tolist()
+        return [int(i) for i in indices]
+
+    def _load_episode_hdr_tree_video(self, sample) -> tuple[torch.Tensor, list[int]]:
+        required_keys = ("dataset_index", "episode_index", "frame_index")
+        missing = [key for key in required_keys if key not in sample]
+        if missing:
+            raise KeyError(f"FastWAM HDR requires sample metadata keys {missing} to load full-episode frames.")
+
+        dataset_index = int(torch.as_tensor(sample["dataset_index"]).item())
+        episode_index = int(torch.as_tensor(sample["episode_index"]).item())
+        local_start = int(torch.as_tensor(sample["frame_index"]).item())
+
+        multi_dataset = self.lerobot_dataset.multi_dataset
+        dataset = multi_dataset._datasets[dataset_index]
+        current_ep_idx = dataset.episodes.index(episode_index) if dataset.episodes is not None else episode_index
+        ep_start = int(dataset.episode_data_index["from"][current_ep_idx].item())
+        ep_end = int(dataset.episode_data_index["to"][current_ep_idx].item())
+        episode_len = ep_end - ep_start
+        local_end = min(local_start + (self.num_frames - 1) * self.lerobot_dataset.global_sample_stride, episode_len - 1)
+        tree_indices = self._get_hdr_tree_indices(local_end=local_end, episode_end_exclusive=episode_len)
+        timestamps = [index / float(dataset.fps) for index in tree_indices]
+
+        decoded = []
+        processor = self.lerobot_dataset.processor
+        if processor is None:
+            raise ValueError("FastWAM HDR requires a processor so decoded episode frames can use the same image transforms.")
+        transforms = processor.train_transforms if processor.is_train else processor.val_transforms
+        for meta in self.lerobot_dataset.image_meta:
+            camera_key = meta["lerobot_key"]
+            video_path = Path(dataset.root) / dataset.meta.get_video_file_path(episode_index, camera_key)
+            frames = decode_video_frames(video_path, timestamps, dataset.tolerance_s, dataset.video_backend)
+            frames = (frames.squeeze(0) * 255).to(torch.uint8)
+            current_transforms = transforms[meta["key"]] if isinstance(transforms, dict) else transforms
+            for trans in current_transforms:
+                frames = trans(frames)
+            decoded.append(frames)
+
+        if len(decoded) == 1:
+            return decoded[0], tree_indices
+        return torch.stack(decoded, dim=0), tree_indices
 
     def _get_cached_text_context(self, prompt: str):
         if self.text_embedding_cache_dir is None:

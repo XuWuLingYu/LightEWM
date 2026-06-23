@@ -1,5 +1,6 @@
 from dataclasses import dataclass
 import inspect
+from pathlib import Path
 from typing import Any
 
 import torch
@@ -146,6 +147,7 @@ def load_wan22_ti2v_5b_components(
     tokenizer_max_len: int = 512,
     redirect_common_files: bool = True,
     dit_config: dict[str, Any] | None = None,
+    dit_pretrained_path: str | None = None,
     skip_dit_load_from_pretrain: bool = False,
     load_text_encoder: bool = True,
 ):
@@ -175,15 +177,21 @@ def load_wan22_ti2v_5b_components(
         dit: WanVideoDiT = WanVideoDiT(**validated_dit_config).to(device=device, dtype=torch_dtype)
         dit_path = SKIPPED_PRETRAIN_SENTINEL
     else:
-        dit_model_config.download_if_necessary()
+        if dit_pretrained_path:
+            dit_path_obj = Path(dit_pretrained_path).expanduser()
+            if not dit_path_obj.is_file():
+                raise FileNotFoundError(f"`dit_pretrained_path` does not exist: {dit_pretrained_path}")
+        else:
+            dit_model_config.download_if_necessary()
+            dit_path_obj = Path(dit_model_config.path)
         dit = _load_registered_model(
-            dit_model_config.path,
+            str(dit_path_obj),
             "wan_video_dit",
             torch_dtype=torch_dtype,
             device=device,
             model_kwargs_override=validated_dit_config,
         )
-        dit_path = str(dit_model_config.path)
+        dit_path = str(dit_path_obj)
     text_encoder: WanTextEncoder | None = None
     tokenizer: HuggingfaceTokenizer | None = None
     text_encoder_path: str | None = None

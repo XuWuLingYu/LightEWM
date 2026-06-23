@@ -145,6 +145,13 @@ class FastWAMRunner:
                 + str(self._repo_path(action_dit_path).resolve())
             )
 
+        video_dit_path = params.get("video_dit_pretrained_path")
+        if video_dit_path:
+            overrides.append(
+                "model.video_dit_pretrained_path="
+                + str(self._repo_path(video_dit_path).resolve())
+            )
+
         resume_path = params.get("resume")
         if resume_path:
             overrides.append("resume=" + str(self._repo_path(resume_path).resolve()))
