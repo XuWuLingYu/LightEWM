@@ -48,6 +48,7 @@ class RobotVideoDataset(torch.utils.data.Dataset):
         hdr_tree_rgb_frames: int = 4,
         hdr_total_rgb_frames: Optional[int] = None,
         hdr_tree_sampling: str = "uniform_local_start_to_end",
+        latent_cache_dir: Optional[str] = None,
         override_instruction: Optional[str] = None, # whether to hardcode a specific instruction for all samples, for debugging
     ):
         self.lerobot_dataset = BaseLerobotDataset(
@@ -88,6 +89,7 @@ class RobotVideoDataset(torch.utils.data.Dataset):
             else int(hdr_total_rgb_frames)
         )
         self.hdr_tree_sampling = str(hdr_tree_sampling)
+        self.latent_cache_dir = None if latent_cache_dir is None else str(latent_cache_dir)
         if self.hdr_enabled:
             if self.hdr_local_rgb_frames != len(self.video_sample_indices):
                 raise ValueError(
@@ -323,6 +325,49 @@ class RobotVideoDataset(torch.utils.data.Dataset):
             data["tree_image_is_pad"] = tree_image_is_pad
         return data
 
+    def _latent_cache_path(self, idx: int) -> Path:
+        if self.latent_cache_dir is None:
+            raise ValueError("latent_cache_dir is not set.")
+        shard = int(idx) // 10000
+        return Path(self.latent_cache_dir) / f"shard_{shard:05d}" / f"{int(idx):08d}.pt"
+
+    def _get_cached(self, idx: int):
+        cache_path = self._latent_cache_path(idx)
+        if not cache_path.exists():
+            raise FileNotFoundError(f"Missing FastWAM latent cache file: {cache_path}")
+        payload = torch.load(cache_path, map_location="cpu", weights_only=False)
+        prompt = payload["prompt"]
+        if "context" in payload and "context_mask" in payload:
+            context = payload["context"]
+            context_mask = payload["context_mask"]
+        else:
+            context, context_mask = self._get_cached_text_context(prompt)
+            context[~context_mask] = 0.0
+            context_mask = torch.ones_like(context_mask)
+        data = {
+            "input_latents": payload["input_latents"],
+            "first_frame_latents": payload.get("first_frame_latents"),
+            "action": payload["action"],
+            "proprio": payload["proprio"],
+            "prompt": prompt,
+            "context": context,
+            "context_mask": context_mask,
+            "image_is_pad": payload["image_is_pad"],
+            "action_is_pad": payload["action_is_pad"],
+            "proprio_is_pad": payload["proprio_is_pad"],
+            "num_video_frames": int(payload["num_video_frames"]),
+        }
+        optional_keys = (
+            "local_video_frames",
+            "action_video_transition_count",
+            "hdr_tree_frame_indices",
+            "hdr_local_frame_indices",
+        )
+        for key in optional_keys:
+            if key in payload:
+                data[key] = payload[key]
+        return data
+
     def _get_hdr_tree_indices(self, local_end: int, episode_end_exclusive: int) -> list[int]:
         first_candidate = local_end + 1
         if episode_end_exclusive <= first_candidate:
@@ -411,6 +456,8 @@ class RobotVideoDataset(torch.utils.data.Dataset):
         return context, context_mask
 
     def __getitem__(self, idx):
+        if self.latent_cache_dir is not None:
+            return self._get_cached(idx)
         try:
             data = self._get(idx)
         except Exception as e:
