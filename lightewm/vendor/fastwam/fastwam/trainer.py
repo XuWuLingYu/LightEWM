@@ -275,8 +275,19 @@ class Wan22Trainer:
         if not resume_path.exists():
             raise FileNotFoundError(f"Resume checkpoint not found: {resume}")
         logger.info("Loading weight checkpoint only: %s", resume)
-        self.accelerator.unwrap_model(self.model).load_checkpoint(str(resume_path), optimizer=None)
-        logger.warning("Loaded .pt weights only; optimizer/scheduler/step were not restored under ZeRO2.")
+        payload = self.accelerator.unwrap_model(self.model).load_checkpoint(str(resume_path), optimizer=None)
+        loaded_step = payload.get("step") if isinstance(payload, dict) else None
+        if loaded_step is None:
+            match = re.search(r"step[_-](\d+)", resume_path.stem)
+            loaded_step = int(match.group(1)) if match else 0
+        self.global_step = int(loaded_step)
+        if self.global_step > 0:
+            self.scheduler.last_epoch = self.global_step - 1
+            self.scheduler.step()
+        logger.warning(
+            "Loaded .pt weights only at step=%d; optimizer state was not restored.",
+            self.global_step,
+        )
 
     def _set_dit_only_train_mode(self):
         # Match DiffSynth's freeze_except("dit"): only DiT stays trainable/in-train-mode.
@@ -415,6 +426,22 @@ class Wan22Trainer:
             batched["tree_image_is_pad"] = tree_image_is_pad
         return batched
 
+    def _get_eval_sample(self, eval_index: int):
+        sample = self.val_dataset[eval_index]
+        if "video" in sample:
+            return sample
+
+        # Cached training samples intentionally carry latents instead of RGB.
+        # Eval video metrics still need the full RGB clip, including HDR tail
+        # frames, so temporarily bypass the latent cache for this index.
+        if hasattr(self.val_dataset, "_get"):
+            return self.val_dataset._get(eval_index)
+
+        raise KeyError(
+            "Eval sample has no `video` field and the dataset does not expose "
+            "`_get()` for uncached RGB loading."
+        )
+
     @torch.no_grad()
     def evaluate(self):
         if self.val_dataset is None:
@@ -427,7 +454,7 @@ class Wan22Trainer:
         # eval_index = (self.global_step + self.accelerator.process_index) % len(self.val_dataset)
         rng = torch.Generator(device="cpu").manual_seed(self.global_step + self.accelerator.process_index)
         eval_index = torch.randint(0, len(self.val_dataset), (1,), generator=rng).item()
-        sample = self._to_batched_eval_sample(self.val_dataset[eval_index])
+        sample = self._to_batched_eval_sample(self._get_eval_sample(eval_index))
 
         # 1. training loss
         with self.accelerator.autocast():

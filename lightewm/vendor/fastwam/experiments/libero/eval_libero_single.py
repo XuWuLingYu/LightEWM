@@ -277,7 +277,16 @@ def _denormalize_action(action: torch.Tensor, processor: FastWAMProcessor) -> np
 
 
 def _get_num_video_frames(cfg: DictConfig) -> int:
-    return (int(cfg.data.train.num_frames) - 1) // int(cfg.data.train.action_video_freq_ratio) + 1
+    data_cfg = cfg.data.train
+    if bool(data_cfg.get("hdr_enabled", False)):
+        num_frames = int(data_cfg.get("hdr_total_rgb_frames", 0))
+        if num_frames <= 0:
+            num_frames = int(data_cfg.hdr_local_rgb_frames) + int(data_cfg.hdr_tree_rgb_frames)
+    else:
+        num_frames = (int(data_cfg.num_frames) - 1) // int(data_cfg.action_video_freq_ratio) + 1
+    if num_frames % 4 != 1:
+        raise ValueError(f"Eval video frame count must satisfy T % 4 == 1, got {num_frames}.")
+    return num_frames
 
 
 def _validate_visualize_future_video_cfg(cfg: DictConfig) -> None:
@@ -462,9 +471,17 @@ def _task_global_index(cfg: DictConfig) -> Optional[int]:
     return None
 
 
-def _should_save_rollout_video(cfg: DictConfig, trial_idx: int) -> bool:
+def _should_save_rollout_video(cfg: DictConfig, trial_idx: int, success: bool, saved_successes: int) -> bool:
     if not bool(cfg.EVALUATION.get("save_rollout_video", True)):
         return False
+
+    if not success and bool(cfg.EVALUATION.get("save_failed_rollout_video", True)):
+        return True
+
+    if success:
+        success_limit = cfg.EVALUATION.get("save_success_rollout_video_per_task", 1)
+        if success_limit is not None:
+            return int(saved_successes) < int(success_limit)
 
     task_limit = cfg.EVALUATION.get("save_rollout_video_task_limit", None)
     if task_limit is not None:
@@ -658,6 +675,7 @@ def run_single_task(
     if visualize_future_video:
         results["episode_future_video_psnr"] = []
         results["future_video_psnr_mean"] = None
+    saved_success_rollouts = 0
 
     for trial_idx in range(int(cfg.EVALUATION.num_trials)):
         success, replay_images, predicted_future_video_clips, episode_mean_psnr = run_single_episode(
@@ -681,7 +699,7 @@ def run_single_task(
         if visualize_future_video:
             results["episode_future_video_psnr"].append(episode_mean_psnr)
 
-        if _should_save_rollout_video(cfg, trial_idx):
+        if _should_save_rollout_video(cfg, trial_idx, success=success, saved_successes=saved_success_rollouts):
             save_rollout_video(
                 video_dir,
                 replay_images,
@@ -689,6 +707,8 @@ def run_single_task(
                 success=success,
                 task_description=task_description,
             )
+            if success:
+                saved_success_rollouts += 1
         if visualize_future_video:
             if len(predicted_future_video_clips) == 0:
                 logging.warning(

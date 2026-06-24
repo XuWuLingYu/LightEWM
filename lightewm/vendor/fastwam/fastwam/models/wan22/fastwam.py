@@ -281,7 +281,6 @@ class FastWAM(torch.nn.Module):
         return frames
 
     def build_inputs(self, sample, tiled: bool = False):
-        video = sample["video"]
         if "context" not in sample or "context_mask" not in sample:
             raise ValueError(
                 "FastWAM training requires `sample['context']` and `sample['context_mask']`."
@@ -289,20 +288,67 @@ class FastWAM(torch.nn.Module):
         context = sample["context"]
         context_mask = sample["context_mask"]
         proprio = sample.get("proprio", None)
-        if video.ndim != 5:
-            raise ValueError(f"`sample['video']` must be 5D [B, 3, T, H, W], got shape {tuple(video.shape)}")
-        if video.shape[1] != 3:
-            raise ValueError(f"`sample['video']` channel dimension must be 3, got shape {tuple(video.shape)}")
-
-        batch_size, _, num_frames, height, width = video.shape
-        if height % 16 != 0 or width % 16 != 0:
-            raise ValueError(
-                f"Video spatial dims must be multiples of 16, got H={height}, W={width}"
+        cached_input_latents = sample.get("input_latents", None)
+        cached_first_frame_latents = sample.get("first_frame_latents", None)
+        if cached_input_latents is not None:
+            if cached_input_latents.ndim != 5:
+                raise ValueError(
+                    "`sample['input_latents']` must be 5D [B,C,T,H,W], "
+                    f"got shape {tuple(cached_input_latents.shape)}"
+                )
+            batch_size = int(cached_input_latents.shape[0])
+            input_latents = cached_input_latents.to(device=self.device, dtype=self.torch_dtype, non_blocking=True)
+            first_frame_latents = None
+            fuse_flag = False
+            if getattr(self.video_expert, "fuse_vae_embedding_in_latents", False):
+                if cached_first_frame_latents is None:
+                    first_frame_latents = input_latents[:, :, 0:1]
+                else:
+                    if cached_first_frame_latents.ndim != 5:
+                        raise ValueError(
+                            "`sample['first_frame_latents']` must be 5D [B,C,1,H,W], "
+                            f"got shape {tuple(cached_first_frame_latents.shape)}"
+                        )
+                    first_frame_latents = cached_first_frame_latents.to(
+                        device=self.device,
+                        dtype=self.torch_dtype,
+                        non_blocking=True,
+                    )
+                    if first_frame_latents.shape[0] != batch_size or first_frame_latents.shape[2] != 1:
+                        raise ValueError(
+                            "`sample['first_frame_latents']` shape mismatch: "
+                            f"{tuple(first_frame_latents.shape)}"
+                        )
+                fuse_flag = True
+            num_frames_value = sample.get(
+                "num_video_frames",
+                (input_latents.shape[2] - 1) * int(self.vae.temporal_downsample_factor) + 1,
             )
-        if num_frames % 4 != 1:
-            raise ValueError(f"Video T must satisfy T % 4 == 1, got T={num_frames}")
-        if num_frames <= 1:
-            raise ValueError(f"Video T must be > 1 for action-conditioned training, got T={num_frames}")
+            num_frames = int(torch.as_tensor(num_frames_value).reshape(-1)[0].item())
+        else:
+            video = sample["video"]
+            if video.ndim != 5:
+                raise ValueError(f"`sample['video']` must be 5D [B, 3, T, H, W], got shape {tuple(video.shape)}")
+            if video.shape[1] != 3:
+                raise ValueError(f"`sample['video']` channel dimension must be 3, got shape {tuple(video.shape)}")
+
+            batch_size, _, num_frames, height, width = video.shape
+            if height % 16 != 0 or width % 16 != 0:
+                raise ValueError(
+                    f"Video spatial dims must be multiples of 16, got H={height}, W={width}"
+                )
+            if num_frames % 4 != 1:
+                raise ValueError(f"Video T must satisfy T % 4 == 1, got T={num_frames}")
+            if num_frames <= 1:
+                raise ValueError(f"Video T must be > 1 for action-conditioned training, got T={num_frames}")
+            input_video = video.to(device=self.device, dtype=self.torch_dtype, non_blocking=True)
+            input_latents = self._encode_video_latents(input_video, tiled=tiled)
+
+            first_frame_latents = None
+            fuse_flag = False
+            if getattr(self.video_expert, "fuse_vae_embedding_in_latents", False):
+                first_frame_latents = input_latents[:, :, 0:1]
+                fuse_flag = True
 
         if "action" not in sample:
             raise ValueError("`sample['action']` is required for FastWAM training.")
@@ -347,16 +393,6 @@ class FastWAM(torch.nn.Module):
                     "`sample['image_is_pad']` shape mismatch: "
                     f"got {tuple(image_is_pad.shape)} vs expected ({batch_size}, {num_frames})"
                 )
-        
-        input_video = video.to(device=self.device, dtype=self.torch_dtype, non_blocking=True)
-        input_latents = self._encode_video_latents(input_video, tiled=tiled)
-
-        first_frame_latents = None
-        fuse_flag = False
-        if getattr(self.video_expert, "fuse_vae_embedding_in_latents", False):
-            first_frame_latents = input_latents[:, :, 0:1]
-            fuse_flag = True
-
         if context.ndim != 3 or context_mask.ndim != 2:
             raise ValueError(
                 f"`context/context_mask` must be [B,L,D]/[B,L], got {tuple(context.shape)} and {tuple(context_mask.shape)}"

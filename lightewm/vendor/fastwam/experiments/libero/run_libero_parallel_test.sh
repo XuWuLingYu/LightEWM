@@ -341,11 +341,12 @@ run_libero_eval() {
         # When the task exits, write a status file so the scheduler can detect failures promptly.
         tmux select-pane -t $SESSION_NAME:$pane_info 2>/dev/null
         tmux send-keys -t $SESSION_NAME:$pane_info "clear" C-m 2>/dev/null
-        tmux send-keys -t $SESSION_NAME:$pane_info "source ~/.bashrc && cd $ROOT_DIR && export EXP_NAME=$EXP_NAME && export PYTHONPATH='$PYTHONPATH' && export LIBERO_CONFIG_PATH='$LIBERO_CONFIG_PATH' && export DIFFSYNTH_MODEL_BASE_PATH='$DIFFSYNTH_MODEL_BASE_PATH' && \
+        tmux send-keys -t $SESSION_NAME:$pane_info "source ~/.bashrc && cd $ROOT_DIR && export EXP_NAME=$EXP_NAME && export PYTHONPATH='$PYTHONPATH' && export LIBERO_CONFIG_PATH='$LIBERO_CONFIG_PATH' && export DIFFSYNTH_MODEL_BASE_PATH='$DIFFSYNTH_MODEL_BASE_PATH' && export MUJOCO_EGL_DEVICE_ID=0 && \
             STATUS_FILE='$status_file' LOG_FILE='$log_file' RESULT_FILE='$result_file' && \
-            CUDA_VISIBLE_DEVICES=$gpu_id python experiments/libero/eval_libero_single.py \
+            python experiments/libero/eval_libero_single.py \
             task=$CONFIG ckpt=$CKPT \
             EVALUATION.task_suite_name=$suite EVALUATION.task_id=$task_id gpu_id=$gpu_id \
+            EVALUATION.device=cuda:$gpu_id \
             EVALUATION.num_trials=$NUM_TRIALS EVALUATION.output_dir=$OUTPUT_DIR $EXTRA_ARGS > \"\$LOG_FILE\" 2>&1; \
             rc=\$?; \
             if [ \$rc -eq 0 ] && [ -f \"\$RESULT_FILE\" ]; then \

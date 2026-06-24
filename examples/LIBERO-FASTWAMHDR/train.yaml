@@ -5,7 +5,7 @@ runner:
   params:
     fastwam_root: lightewm/vendor/fastwam
     output_path: ./logs/train/LIBERO-FASTWAMHDR
-    num_processes: 8
+    num_processes: 16
     zero_stage: 1
 
     # FastWAM-native Hydra choices.
@@ -29,8 +29,8 @@ runner:
 
     # Parameters intentionally match FastWAM configs/task/libero_joint_2cam224_1e-4.yaml.
     hydra_overrides:
-      - batch_size=16
-      - num_workers=4
+      - batch_size=8
+      - num_workers=8
       - model.redirect_common_files=false
       - model.mot_checkpoint_mixed_attn=false
       - lr_scheduler_type=cosine
@@ -38,9 +38,10 @@ runner:
       - num_epochs=10
       - max_steps=null
       - log_every=10
-      - save_every=1000
-      - eval_every=200
-      - +smoke_eval_step=5
+      - save_every=500
+      - eval_every=500
+      - +data.train.latent_cache_dir=../../../data/fastwamhdr_latent_cache_13f
+      - +smoke_eval_step=0
       - gradient_accumulation_steps=1
       - weight_decay=1e-2
       - mixed_precision=bf16
