@@ -496,6 +496,12 @@ class Trainer:
             print(f"Loading pretrained generator from {config.generator_ckpt}")
             self.model.generator.load_state_dict(_load_generator_checkpoint(config.generator_ckpt), strict=True)
 
+        resume_step = int(getattr(config, "resume_step", 0) or 0)
+        if resume_step > 0:
+            self.step = resume_step
+            if self.is_main_process:
+                print(f"[Resume] Starting training from resume_step={self.step}", flush=True)
+
         if self.action_training and (not self.video_action_joint_training) and getattr(config, "action_dit_ckpt", None):
             print(f"Loading pretrained action_dit from {config.action_dit_ckpt}")
             action_target = (
@@ -1044,6 +1050,15 @@ class Trainer:
             action_video_latents = None
             action_video_leaf_k = None
             action_video_leaf_v = None
+        elif cached_clean_latent is not None:
+            clean_latent = cached_clean_latent.to(device=self.device, dtype=self.dtype)
+            record_time("host_to_device")
+            record_time("vae_encode")
+            image_latent = clean_latent[:, 0:1]
+            image_or_video_shape = list(clean_latent.shape)
+            action_video_latents = None
+            action_video_leaf_k = None
+            action_video_leaf_v = None
         elif self.video_action_joint_training:
             joint_local_frames = batch["joint_local_frames"].to(device=self.device, dtype=self.dtype)
             record_time("host_to_device")
@@ -1322,7 +1337,12 @@ class Trainer:
 
             save_start = self._timer_now() if profile_step else None
             did_optimizer_step = bool(getattr(self, "_last_optimizer_step", True))
-            if did_optimizer_step and (not self.config.no_save) and self.step % self.config.log_iters == 0:
+            periodic_ckpt_interval = int(getattr(self.config, "realbot_periodic_infer_interval", 0) or 0)
+            should_save_for_log = self.step % self.config.log_iters == 0
+            should_save_for_periodic_infer = (
+                periodic_ckpt_interval > 0 and self.step % periodic_ckpt_interval == 0
+            )
+            if did_optimizer_step and (not self.config.no_save) and (should_save_for_log or should_save_for_periodic_infer):
                 torch.cuda.empty_cache()
                 self.save()
                 torch.cuda.empty_cache()

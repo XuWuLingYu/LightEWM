@@ -1,0 +1,25 @@
+train:
+  _target_: fastwam.datasets.lerobot.latent_cache_dataset.FastWAMLatentCacheDataset
+  latent_cache_dir: ./data/mixed_adapter_episode_back
+  index_file: ./data/mixed_adapter_episode_back/train_indices.pt
+  text_embedding_cache_dir: ./data/text_embeds_cache/mixed_adapter_episode_back
+  dataset_dirs:
+    - ./data/mixed_adapter_episode_back/prompt_dataset
+  context_len: 128
+  require_video: false
+  processor:
+    action_output_dim: 14
+    proprio_output_dim: 14
+
+val:
+  _target_: fastwam.datasets.lerobot.latent_cache_dataset.FastWAMLatentCacheDataset
+  latent_cache_dir: ./data/mixed_adapter_episode_back
+  index_file: ./data/mixed_adapter_episode_back/val_indices.pt
+  text_embedding_cache_dir: ./data/text_embeds_cache/mixed_adapter_episode_back
+  dataset_dirs:
+    - ./data/mixed_adapter_episode_back/prompt_dataset
+  context_len: 128
+  require_video: true
+  processor:
+    action_output_dim: 14
+    proprio_output_dim: 14

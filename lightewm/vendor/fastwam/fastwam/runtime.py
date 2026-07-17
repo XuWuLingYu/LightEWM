@@ -157,6 +157,7 @@ def create_fastwam(
         action_num_train_timesteps=int(action_scheduler["num_train_timesteps"]),
         loss_lambda_video=float(loss.get("lambda_video", 1.0)),
         loss_lambda_action=float(loss.get("lambda_action", 1.0)),
+        episode_video_loss_scale=float(loss.get("episode_video_scale", 1.0)),
     )
 
 
@@ -176,6 +177,7 @@ def create_fastwam_joint(
     loss=None,
     mot_checkpoint_mixed_attn: bool = True,
     action_attend_video: str = "full",
+    hdr_mode: str = "back_hdr",
     redirect_common_files: bool = True,
     model_dtype: torch.dtype = torch.bfloat16,
     device: str = "cuda",
@@ -245,7 +247,9 @@ def create_fastwam_joint(
         action_num_train_timesteps=int(action_scheduler["num_train_timesteps"]),
         loss_lambda_video=float(loss.get("lambda_video", 1.0)),
         loss_lambda_action=float(loss.get("lambda_action", 1.0)),
+        episode_video_loss_scale=float(loss.get("episode_video_scale", 1.0)),
         action_attend_video=str(action_attend_video),
+        hdr_mode=str(hdr_mode),
     )
 
 
@@ -340,16 +344,33 @@ def create_fastwam_idm(
 
 def build_datasets(data_cfg: DictConfig):
     train_ds = instantiate(data_cfg.train)
+    aux_video_ds = None
+    if data_cfg.get("aux_video") is not None:
+        aux_video_cfg = data_cfg.aux_video
+        if aux_video_cfg.get("_target_") is None:
+            base_cfg = OmegaConf.create(OmegaConf.to_container(data_cfg.train, resolve=True))
+            override_cfg = OmegaConf.create(OmegaConf.to_container(aux_video_cfg, resolve=True))
+            OmegaConf.set_struct(base_cfg, False)
+            aux_video_cfg = OmegaConf.merge(base_cfg, override_cfg)
+        train_stats_path = data_cfg.train.get("pretrained_norm_stats")
+        default_stats_path = os.path.join(misc.get_work_dir(), "dataset_stats.json")
+        aux_stats_path = aux_video_cfg.get("pretrained_norm_stats")
+        pretrained_norm_stats = aux_stats_path or train_stats_path or default_stats_path
+        logger.info("Building aux video dataset with pretrained_norm_stats: %s", pretrained_norm_stats)
+        aux_video_ds = instantiate(aux_video_cfg, pretrained_norm_stats=pretrained_norm_stats)
     if data_cfg.get("val") is None:
         val_ds = train_ds
     else:
+        val_cfg = data_cfg.val
+        if val_cfg.get("_target_") is None:
+            val_cfg = OmegaConf.merge(data_cfg.train, val_cfg)
         train_stats_path = data_cfg.train.get("pretrained_norm_stats")
         default_stats_path = os.path.join(misc.get_work_dir(), "dataset_stats.json")
-        val_stats_path = data_cfg.val.get("pretrained_norm_stats")
+        val_stats_path = val_cfg.get("pretrained_norm_stats")
         pretrained_norm_stats = val_stats_path or train_stats_path or default_stats_path
         logger.info("Building val dataset with pretrained_norm_stats: %s", pretrained_norm_stats)
-        val_ds = instantiate(data_cfg.val, pretrained_norm_stats=pretrained_norm_stats)
-    return train_ds, val_ds
+        val_ds = instantiate(val_cfg, pretrained_norm_stats=pretrained_norm_stats)
+    return train_ds, val_ds, aux_video_ds
 
 
 def _resolve_train_device() -> str:
@@ -378,13 +399,14 @@ def run_training(cfg: DictConfig):
     mixed_precision = _normalize_mixed_precision(cfg.mixed_precision)
     model_dtype = _mixed_precision_to_model_dtype(mixed_precision)
     model = instantiate(cfg.model, model_dtype=model_dtype, device=model_device)
-    train_ds, val_ds = build_datasets(cfg.data)
+    train_ds, val_ds, aux_video_ds = build_datasets(cfg.data)
 
     trainer = Wan22Trainer(
         cfg=cfg,
         model=model,
         train_dataset=train_ds,
         val_dataset=val_ds,
+        aux_video_dataset=aux_video_ds,
     )
     trainer.train()
 

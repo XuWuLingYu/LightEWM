@@ -74,6 +74,7 @@ class FastWAMRunner:
         env.setdefault("TOKENIZERS_PARALLELISM", "false")
         env.setdefault("DIFFSYNTH_MODEL_BASE_PATH", str((self.repo_root / "checkpoints").resolve()))
         env.setdefault("LIBERO_CONFIG_PATH", str(self._ensure_libero_config()))
+        env.setdefault("TORCH_FORCE_NO_WEIGHTS_ONLY_LOAD", "1")
         return env
 
     def _ensure_libero_config(self) -> Path:

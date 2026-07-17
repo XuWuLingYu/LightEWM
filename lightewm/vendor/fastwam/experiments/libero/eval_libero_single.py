@@ -377,7 +377,15 @@ def _predict_action_chunk(
     input_w: int,
     input_h: int,
     model_device: str,
-) -> tuple[np.ndarray, dict, Optional[list[Image.Image]]]:
+    episode_image: Optional[torch.Tensor] = None,
+) -> tuple[np.ndarray, dict, Optional[list[Image.Image]], torch.Tensor]:
+    profile_action_breakdown = bool(cfg.EVALUATION.get("profile_action_breakdown", False))
+
+    def _profile_sync():
+        if profile_action_breakdown and str(model_device).startswith("cuda") and torch.cuda.is_available():
+            torch.cuda.synchronize()
+
+    profile_total_start = time.perf_counter() if profile_action_breakdown else None
     num_inference_steps_cfg = cfg.EVALUATION.get("num_inference_steps", None)
     if num_inference_steps_cfg is None:
         num_inference_steps = int(cfg.get("eval_num_inference_steps", 20))
@@ -386,6 +394,7 @@ def _predict_action_chunk(
     prompt_template = DEFAULT_PROMPT
     prompt = prompt_template.format(task=task_description)
 
+    profile_input_start = time.perf_counter() if profile_action_breakdown else None
     image, proprio, imgs = _obs_to_model_input(
         obs,
         cfg=cfg,
@@ -395,7 +404,12 @@ def _predict_action_chunk(
         device=model_device,
         dtype=model.torch_dtype,
     )
+    _profile_sync()
+    profile_input_seconds = (
+        time.perf_counter() - profile_input_start if profile_input_start is not None else None
+    )
 
+    profile_kwargs_start = time.perf_counter() if profile_action_breakdown else None
     infer_kwargs = {
         "prompt": prompt,
         "input_image": image,
@@ -419,13 +433,35 @@ def _predict_action_chunk(
         infer_kwargs["num_video_frames"] = _get_num_video_frames(cfg)
     elif "num_video_frames" in inspect.signature(model.infer_action).parameters:
         infer_kwargs["num_video_frames"] = _get_num_video_frames(cfg)
+        if "episode_image" in inspect.signature(model.infer_action).parameters:
+            infer_kwargs["episode_image"] = image if episode_image is None else episode_image
 
+    _profile_sync()
+    profile_kwargs_seconds = (
+        time.perf_counter() - profile_kwargs_start if profile_kwargs_start is not None else None
+    )
+
+    action_model_seconds = None
     with torch.no_grad():
         if visualize_future_video:
             pred = model.infer_joint(**infer_kwargs)
             predicted_future_frames = _select_predicted_future_frames(pred["video"], cfg)
         else:
+            profile_action_model_time = bool(cfg.EVALUATION.get("profile_action_model_time", False)) or profile_action_breakdown
+            _profile_sync()
+            action_model_start_time = time.perf_counter() if profile_action_model_time else None
             pred = model.infer_action(**infer_kwargs)
+            _profile_sync()
+            if action_model_start_time is not None:
+                action_model_seconds = time.perf_counter() - action_model_start_time
+                if not profile_action_breakdown:
+                    print(
+                        "profile: infer_action_model_seconds="
+                        f"{action_model_seconds:.6f}",
+                        flush=True,
+                    )
+
+    profile_post_start = time.perf_counter() if profile_action_breakdown else None
     action = pred["action"]  # [T, D]
 
     action = _denormalize_action(action, processor)[0]  # [T, D]
@@ -436,7 +472,23 @@ def _predict_action_chunk(
     action = invert_gripper_action(action)
     if bool(cfg.EVALUATION.get("binarize_gripper", False)):
         action[..., -1] = np.sign(action[..., -1])
-    return action, imgs, predicted_future_frames
+    model_image_cpu = image.detach().to(device="cpu")
+    _profile_sync()
+    profile_post_seconds = (
+        time.perf_counter() - profile_post_start if profile_post_start is not None else None
+    )
+    if profile_action_breakdown:
+        total_seconds = time.perf_counter() - profile_total_start
+        print(
+            "profile: action_breakdown "
+            f"input_seconds={profile_input_seconds:.6f} "
+            f"kwargs_seconds={profile_kwargs_seconds:.6f} "
+            f"infer_action_seconds={action_model_seconds:.6f} "
+            f"postprocess_seconds={profile_post_seconds:.6f} "
+            f"total_seconds={total_seconds:.6f}",
+            flush=True,
+        )
+    return action, imgs, predicted_future_frames, model_image_cpu
 
 
 def _get_max_steps(task_suite_name: str) -> int:
@@ -471,11 +523,20 @@ def _task_global_index(cfg: DictConfig) -> Optional[int]:
     return None
 
 
-def _should_save_rollout_video(cfg: DictConfig, trial_idx: int, success: bool, saved_successes: int) -> bool:
+def _should_save_rollout_video(
+    cfg: DictConfig,
+    trial_idx: int,
+    success: bool,
+    saved_successes: int,
+    saved_failures: int = 0,
+) -> bool:
     if not bool(cfg.EVALUATION.get("save_rollout_video", True)):
         return False
 
     if not success and bool(cfg.EVALUATION.get("save_failed_rollout_video", True)):
+        failure_limit = cfg.EVALUATION.get("save_failed_rollout_video_per_task", None)
+        if failure_limit is not None:
+            return int(saved_failures) < int(failure_limit)
         return True
 
     if success:
@@ -492,6 +553,21 @@ def _should_save_rollout_video(cfg: DictConfig, trial_idx: int, success: bool, s
     if episode_limit is not None:
         return int(trial_idx) < int(episode_limit)
     return True
+
+
+def _resolve_eval_trial_indices(cfg: DictConfig) -> list[int]:
+    trial_indices_cfg = cfg.EVALUATION.get("trial_indices", None)
+    if trial_indices_cfg is not None:
+        return [int(idx) for idx in trial_indices_cfg]
+
+    total_trials = int(cfg.EVALUATION.num_trials)
+    trial_start = int(cfg.EVALUATION.get("trial_start", 0))
+    trial_count_cfg = cfg.EVALUATION.get("trial_count", None)
+    trial_count = total_trials - trial_start if trial_count_cfg is None else int(trial_count_cfg)
+    if trial_start < 0 or trial_count < 0:
+        raise ValueError(f"Invalid trial slice: trial_start={trial_start}, trial_count={trial_count}")
+    trial_end = min(total_trials, trial_start + trial_count)
+    return list(range(trial_start, trial_end))
 
 
 def _get_task_init_states_legacy_pickle(task_suite, task_id: int):
@@ -543,6 +619,7 @@ def run_single_episode(
     episode_future_clip_psnr: list[float] = []
     pending_actions: list[list[float]] = []
     current_predicted_future_clip: Optional[dict[str, Any]] = None
+    episode_first_model_image: Optional[torch.Tensor] = None
     current_replan_step = 0
     current_replan_idx = -1
 
@@ -557,7 +634,9 @@ def run_single_episode(
             continue
 
         if len(pending_actions) == 0:
-            action_chunk, imgs, predicted_future_frames = _predict_action_chunk(
+            profile_inference_time = bool(cfg.EVALUATION.get("profile_inference_time", False))
+            inference_start_time = time.perf_counter() if profile_inference_time else None
+            action_chunk, imgs, predicted_future_frames, model_image = _predict_action_chunk(
                 obs=obs,
                 task_description=task_description,
                 model=model,
@@ -567,7 +646,17 @@ def run_single_episode(
                 input_w=input_w,
                 input_h=input_h,
                 model_device=model_device,
+                episode_image=episode_first_model_image,
             )
+            if inference_start_time is not None:
+                inference_seconds = time.perf_counter() - inference_start_time
+                print(
+                    "profile: infer_action_chunk_seconds="
+                    f"{inference_seconds:.6f} episode={episode_idx} step={t}",
+                    flush=True,
+                )
+            if episode_first_model_image is None:
+                episode_first_model_image = model_image
             if predicted_future_frames is not None:
                 current_replan_idx += 1
                 current_predicted_future_clip = {
@@ -666,21 +755,37 @@ def run_single_task(
 ) -> dict:
     env, task_description = get_libero_env(task, LIBERO_ENV_RESOLUTION, cfg.get("seed"))
     visualize_future_video = bool(cfg.EVALUATION.get("visualize_future_video", False))
+    trial_indices = _resolve_eval_trial_indices(cfg)
     results = {
         "successes": 0,
         "failure_episodes": [],
         "success_episodes": [],
         "task_description": task_description,
+        "total_episodes": len(trial_indices),
+        "evaluated_trial_indices": trial_indices,
     }
     if visualize_future_video:
         results["episode_future_video_psnr"] = []
         results["future_video_psnr_mean"] = None
     saved_success_rollouts = 0
+    saved_failure_rollouts = 0
+    saved_failed_prediction_videos = 0
+    spatial_task5_init_offset = float(cfg.EVALUATION.get("spatial_task5_initial_state_12_offset", 0.038))
+    apply_spatial_task5_init_offset = (
+        str(cfg.EVALUATION.task_suite_name) == "libero_spatial"
+        and int(cfg.EVALUATION.task_id) == 5
+        and spatial_task5_init_offset != 0.0
+    )
 
-    for trial_idx in range(int(cfg.EVALUATION.num_trials)):
+    for trial_idx in trial_indices:
+        initial_state = initial_states[trial_idx]
+        if apply_spatial_task5_init_offset:
+            initial_state = np.array(initial_state, copy=True)
+            initial_state[12] += spatial_task5_init_offset
+            print(f"debug: initial_state[12] += {spatial_task5_init_offset}", flush=True)
         success, replay_images, predicted_future_video_clips, episode_mean_psnr = run_single_episode(
             env=env,
-            initial_state=initial_states[trial_idx],
+            initial_state=initial_state,
             task_description=task_description,
             model=model,
             processor=processor,
@@ -699,7 +804,13 @@ def run_single_task(
         if visualize_future_video:
             results["episode_future_video_psnr"].append(episode_mean_psnr)
 
-        if _should_save_rollout_video(cfg, trial_idx, success=success, saved_successes=saved_success_rollouts):
+        if _should_save_rollout_video(
+            cfg,
+            trial_idx,
+            success=success,
+            saved_successes=saved_success_rollouts,
+            saved_failures=saved_failure_rollouts,
+        ):
             save_rollout_video(
                 video_dir,
                 replay_images,
@@ -709,14 +820,24 @@ def run_single_task(
             )
             if success:
                 saved_success_rollouts += 1
+            else:
+                saved_failure_rollouts += 1
         if visualize_future_video:
+            save_predicted_video = True
+            if not success:
+                failure_prediction_limit = cfg.EVALUATION.get("save_failed_prediction_video_per_task", None)
+                if failure_prediction_limit is not None:
+                    save_predicted_video = saved_failed_prediction_videos < int(failure_prediction_limit)
+            elif int(cfg.EVALUATION.get("save_success_prediction_video_per_task", 1)) <= 0:
+                save_predicted_video = False
+
             if len(predicted_future_video_clips) == 0:
                 logging.warning(
                     "No predicted future frames collected for task %s trial %s.",
                     cfg.EVALUATION.task_id,
                     trial_idx,
                 )
-            else:
+            elif save_predicted_video:
                 all_gt_frames = []
                 all_pred_frames = []
                 for clip in predicted_future_video_clips:
@@ -740,6 +861,8 @@ def run_single_task(
                     success=success,
                     task_description=task_description,
                 )
+                if not success:
+                    saved_failed_prediction_videos += 1
 
     if visualize_future_video:
         valid_episode_psnr = [x for x in results["episode_future_video_psnr"] if x is not None]
@@ -809,15 +932,17 @@ def eval_single_process(cfg: DictConfig):
     task = task_suite.get_task(cfg.EVALUATION.task_id)
     initial_states = _get_task_init_states_legacy_pickle(task_suite, int(cfg.EVALUATION.task_id))
 
-    while len(initial_states) < int(cfg.EVALUATION.num_trials):
-        initial_states.extend(initial_states[: (int(cfg.EVALUATION.num_trials) - len(initial_states))])
+    trial_indices = _resolve_eval_trial_indices(cfg)
+    required_initial_states = max(trial_indices) + 1 if trial_indices else 0
+    while len(initial_states) < required_initial_states:
+        initial_states.extend(initial_states[: (required_initial_states - len(initial_states))])
 
     results = {
         "task_suite": cfg.EVALUATION.task_suite_name,
         "task_id": cfg.EVALUATION.task_id,
         "task_description": None,
         "successes": 0,
-        "total_episodes": int(cfg.EVALUATION.num_trials),
+        "total_episodes": len(trial_indices),
         "gpu_id": int(cfg.gpu_id),
         "success_episodes": [],
         "failure_episodes": [],
@@ -851,7 +976,7 @@ def eval_single_process(cfg: DictConfig):
 
     print(
         f"Task {cfg.EVALUATION.task_id} completed: "
-        f"{results['successes']}/{cfg.EVALUATION.num_trials} successes"
+        f"{results['successes']}/{results['total_episodes']} successes"
     )
     if results.get("future_video_psnr_mean") is not None:
         print(f"Task {cfg.EVALUATION.task_id} future-video PSNR mean: {results['future_video_psnr_mean']:.4f}")

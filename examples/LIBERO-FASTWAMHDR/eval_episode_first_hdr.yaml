@@ -1,0 +1,42 @@
+task: eval
+
+runner:
+  class_path: lightewm.runner.fastwam.FastWAMRunner
+  params:
+    fastwam_root: lightewm/vendor/fastwam
+    output_dir: ./logs/eval/LIBERO-FASTWAMHDR-episode_first_hdr
+    num_processes: 16
+
+    fastwam_task: libero_joint_2cam224_1e-4
+    fastwam_model: fastwam_joint
+    fastwam_data: libero_2cam
+
+    checkpoint_path: null
+    dataset_stats_path: null
+
+    num_gpus: 16
+    max_tasks_per_gpu: 1
+    num_trials: 50
+    task_suite_names:
+      - libero_10
+      - libero_goal
+      - libero_spatial
+      - libero_object
+
+    hydra_overrides:
+      - seed=43
+      - model.redirect_common_files=false
+      - model.action_attend_video=local_clean_first
+      - model.hdr_mode=episode_first_hdr
+      - +data.train.hdr_enabled=true
+      - +data.train.hdr_mode=episode_first_hdr
+      - +data.train.hdr_local_rgb_frames=9
+      - +data.train.hdr_tree_rgb_frames=4
+      - +data.train.hdr_total_rgb_frames=13
+      - EVALUATION.replan_steps=10
+      - EVALUATION.num_inference_steps=10
+      - EVALUATION.text_cfg_scale=1.0
+      - EVALUATION.visualize_future_video=false
+      - EVALUATION.save_rollout_video=true
+      - EVALUATION.save_failed_rollout_video=true
+      - EVALUATION.save_success_rollout_video_per_task=1

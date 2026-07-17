@@ -515,6 +515,7 @@ class WanVideoDiT(torch.nn.Module):
         action: Optional[torch.Tensor] = None,
         fuse_vae_embedding_in_latents: bool = False,
         control_camera_latents_input: Optional[torch.Tensor] = None,
+        clean_latent_indices: Optional[torch.Tensor] = None,
     ) -> Dict[str, Any]:
         x, timestep, context_mask = self._validate_forward_inputs(
             x=x,
@@ -543,7 +544,16 @@ class WanVideoDiT(torch.nn.Module):
                 dtype=timestep.dtype,
                 device=timestep.device,
             ) * timestep.view(batch_size, 1, 1)
-            token_timesteps[:, 0, :] = 0
+            if clean_latent_indices is None:
+                token_timesteps[:, 0, :] = 0
+            else:
+                clean_latent_indices = torch.as_tensor(clean_latent_indices, device=token_timesteps.device, dtype=torch.long).flatten()
+                if clean_latent_indices.numel() > 0:
+                    if int(clean_latent_indices.min().item()) < 0 or int(clean_latent_indices.max().item()) >= x.shape[2]:
+                        raise ValueError(
+                            f"clean_latent_indices out of range for latent T={x.shape[2]}: {clean_latent_indices.tolist()}"
+                        )
+                    token_timesteps.index_fill_(1, clean_latent_indices, 0)
             token_timesteps = token_timesteps.reshape(batch_size, -1)
             token_t_emb = sinusoidal_embedding_1d(self.freq_dim, token_timesteps.reshape(-1))
             t = self.time_embedding(token_t_emb).reshape(batch_size, -1, self.hidden_dim)
@@ -633,6 +643,7 @@ class WanVideoDiT(torch.nn.Module):
         context_mask: Optional[torch.Tensor] = None,
         action: Optional[torch.Tensor] = None,
         fuse_vae_embedding_in_latents: bool = False,
+        clean_latent_indices: Optional[torch.Tensor] = None,
     ):
         pre_state = self.pre_dit(
             x=x,
@@ -641,6 +652,7 @@ class WanVideoDiT(torch.nn.Module):
             context_mask=context_mask,
             action=action,
             fuse_vae_embedding_in_latents=fuse_vae_embedding_in_latents,
+            clean_latent_indices=clean_latent_indices,
         )
         x_tokens = pre_state["tokens"]
         context_emb = pre_state["context"]

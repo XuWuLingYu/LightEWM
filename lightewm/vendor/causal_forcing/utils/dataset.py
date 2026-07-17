@@ -463,14 +463,21 @@ def _load_preencoded_joint_cache(cache_path: Path) -> dict:
             value = torch.as_tensor(value)
         return value.float()
 
-    batch = {
-        "clean_latent": _tensor("clean_latent"),
-        "joint_local_start_latent": _tensor("joint_local_start_latent"),
-        "joint_local_video_latents": _tensor("joint_local_video_latents"),
-        "joint_actions": _tensor("joint_actions"),
-        "joint_proprio": _tensor("joint_proprio"),
-        "prompt_embeds": _tensor("prompt_embeds"),
-    }
+    batch = {"clean_latent": _tensor("clean_latent")}
+    prompt_embeds = _tensor("prompt_embeds", required=False)
+    if prompt_embeds is not None:
+        batch["prompt_embeds"] = prompt_embeds
+
+    # Pure video HDR caches only need clean_latent.  Joint/action caches keep
+    # their previous required fields when any joint key is present.
+    joint_keys = ("joint_local_start_latent", "joint_local_video_latents", "joint_actions", "joint_proprio")
+    if any(key in loaded for key in joint_keys):
+        batch.update({
+            "joint_local_start_latent": _tensor("joint_local_start_latent"),
+            "joint_local_video_latents": _tensor("joint_local_video_latents"),
+            "joint_actions": _tensor("joint_actions"),
+            "joint_proprio": _tensor("joint_proprio"),
+        })
     for key in ("joint_window_start", "joint_window_indices", "joint_video_indices"):
         value = loaded.get(key)
         if value is not None:

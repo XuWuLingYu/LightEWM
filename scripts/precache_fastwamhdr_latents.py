@@ -94,24 +94,76 @@ def _encode_videos(vae, videos: list[torch.Tensor], device: torch.device, dtype:
     return latents.detach().cpu().to(torch.bfloat16)
 
 
-def _payload_from_sample(sample: dict, latents: torch.Tensor):
-    first_frame_latents = latents[:, :, 0:1].contiguous()
-    payload = {
-        "input_latents": latents.squeeze(0).contiguous(),
-        "first_frame_latents": first_frame_latents.squeeze(0).contiguous(),
+def _episode_ranges(dataset, num_samples: int) -> list[tuple[int, int]]:
+    base_dataset = getattr(dataset, "lerobot_dataset", None)
+    episode_data_index = getattr(base_dataset, "episode_data_index", None)
+    if not episode_data_index:
+        raise ValueError("--shard-mode episode requires dataset.lerobot_dataset.episode_data_index")
+    starts = episode_data_index["from"].detach().cpu().tolist()
+    ends = episode_data_index["to"].detach().cpu().tolist()
+    ranges = []
+    for start, end in zip(starts, ends, strict=True):
+        start = max(int(start), 0)
+        end = min(int(end), int(num_samples))
+        if start < end:
+            ranges.append((start, end))
+    if not ranges:
+        raise ValueError("No episode ranges overlap the requested sample range")
+    return ranges
+
+
+def _episode_shard_indices(dataset, num_samples: int, rank: int, world_size: int) -> list[int]:
+    ranges = _episode_ranges(dataset, num_samples)
+    total = sum(end - start for start, end in ranges)
+    target_start = (rank * total) // world_size
+    target_end = ((rank + 1) * total) // world_size
+    cursor = 0
+    selected = []
+    for start, end in ranges:
+        length = end - start
+        next_cursor = cursor + length
+        if next_cursor > target_start and cursor < target_end:
+            selected.extend(range(start, end))
+        cursor = next_cursor
+    return selected
+
+
+def _payload_from_sample(sample: dict, latents: torch.Tensor, episode_latents: torch.Tensor | None = None):
+    if episode_latents is not None:
+        payload = {
+            "hdr_mode": sample.get("hdr_mode", "episode_first_hdr"),
+            "local_latents": latents.squeeze(0).contiguous(),
+            "episode_latents": episode_latents.squeeze(0).contiguous(),
+        }
+    else:
+        first_frame_latents = latents[:, :, 0:1].contiguous()
+        payload = {
+            "input_latents": latents.squeeze(0).contiguous(),
+            "first_frame_latents": first_frame_latents.squeeze(0).contiguous(),
+        }
+    payload.update({
         "action": sample["action"].contiguous(),
         "proprio": sample["proprio"].contiguous(),
         "prompt": sample["prompt"],
         "image_is_pad": sample["image_is_pad"].contiguous(),
         "action_is_pad": sample["action_is_pad"].contiguous(),
+        "action_dim_is_pad": sample.get("action_dim_is_pad", torch.zeros(sample["action"].shape[-1], dtype=torch.bool)).contiguous(),
         "proprio_is_pad": sample["proprio_is_pad"].contiguous(),
-        "num_video_frames": int(sample["video"].shape[1]),
-    }
+        "num_video_frames": int(sample["video"].shape[1]) if episode_latents is None else int(sample["video"].shape[1] + sample.get("episode_video", sample["video"]).shape[1]),
+    })
     for key in (
         "local_video_frames",
         "action_video_transition_count",
         "hdr_tree_frame_indices",
         "hdr_local_frame_indices",
+        "hdr_episode_frame_indices",
+        "hdr_episode_latent_indices",
+        "hdr_episode_latent_source_frame_indices",
+        "hdr_episode_latent_padded_frames",
+        "hdr_mode",
+        "action_adapter",
+        "source_name",
+        "source_episode_index",
     ):
         if key in sample:
             value = sample[key]
@@ -131,15 +183,27 @@ def main():
     parser.add_argument("--encode-batch-size", type=int, default=4)
     parser.add_argument("--sample-workers", type=int, default=1)
     parser.add_argument("--load-retries", type=int, default=3)
+    parser.add_argument("--shard-rank", type=int, default=None)
+    parser.add_argument("--num-shards", type=int, default=None)
+    parser.add_argument("--shard-mode", choices=("strided", "contiguous", "episode"), default="strided")
+    parser.add_argument("--timing-report", action="store_true")
     parser.add_argument("overrides", nargs="*")
     args = parser.parse_args()
 
-    if "RANK" in os.environ and "WORLD_SIZE" in os.environ:
+    manual_sharding = args.shard_rank is not None or args.num_shards is not None
+    if manual_sharding:
+        if args.shard_rank is None or args.num_shards is None:
+            raise ValueError("--shard-rank and --num-shards must be set together")
+        if args.shard_rank < 0 or args.shard_rank >= args.num_shards:
+            raise ValueError("Expected 0 <= --shard-rank < --num-shards")
+    elif "RANK" in os.environ and "WORLD_SIZE" in os.environ:
         dist.init_process_group(backend="nccl" if torch.cuda.is_available() else "gloo")
-    rank, world_size = _rank_world()
+    rank, world_size = (int(args.shard_rank), int(args.num_shards)) if manual_sharding else _rank_world()
     device = _device()
     barrier_device_ids = [device.index] if device.type == "cuda" and device.index is not None else None
     dtype = torch.bfloat16
+    run_start = time.perf_counter()
+    timing = {"load": 0.0, "encode": 0.0, "write": 0.0, "samples": 0.0}
     out_root = Path(args.output_dir).resolve()
     if rank == 0:
         out_root.mkdir(parents=True, exist_ok=True)
@@ -166,6 +230,7 @@ def main():
         metadata = {
             "num_samples": len(dataset),
             "world_size": world_size,
+            "manual_sharding": manual_sharding,
             "task": args.task,
             "model": args.model,
             "data": args.data,
@@ -176,8 +241,16 @@ def main():
         dist.barrier(device_ids=barrier_device_ids)
 
     num_samples = len(dataset) if args.max_samples is None else min(len(dataset), int(args.max_samples))
+    if args.shard_mode == "episode":
+        index_iterable = _episode_shard_indices(dataset, num_samples, rank, world_size)
+    elif args.shard_mode == "contiguous":
+        start_idx = (rank * num_samples) // world_size
+        end_idx = ((rank + 1) * num_samples) // world_size
+        index_iterable = range(start_idx, end_idx)
+    else:
+        index_iterable = range(rank, num_samples, world_size)
     indices = [
-        idx for idx in range(rank, num_samples, world_size)
+        idx for idx in index_iterable
         if args.overwrite or not _cache_path(out_root, idx).exists()
     ]
     iterator = tqdm(indices, desc=f"rank {rank}", disable=rank != 0)
@@ -187,8 +260,9 @@ def main():
         retries = max(int(args.load_retries), 1)
         for attempt in range(retries):
             try:
+                load_start = time.perf_counter()
                 sample = dataset._get(idx)
-                return idx, path, sample
+                return idx, path, sample, time.perf_counter() - load_start
             except Exception:
                 gc.collect()
                 if attempt + 1 >= retries:
@@ -201,14 +275,25 @@ def main():
     def flush(batch):
         if not batch:
             return
-        videos = [sample["video"] for _, _, sample in batch]
+        timing["load"] += sum(float(item[3]) for item in batch)
+        videos = [sample["video"] for _, _, sample, _ in batch]
+        encode_start = time.perf_counter()
         latents = _encode_videos(vae, videos, device=device, dtype=dtype)
-        for latent, (_, path, sample) in zip(latents, batch):
+        episode_latents = None
+        if any("episode_video" in sample for _, _, sample, _ in batch):
+            episode_videos = [sample["episode_video"] for _, _, sample, _ in batch]
+            episode_latents = _encode_videos(vae, episode_videos, device=device, dtype=dtype)
+        timing["encode"] += time.perf_counter() - encode_start
+        write_start = time.perf_counter()
+        for n, (latent, (_, path, sample, _)) in enumerate(zip(latents, batch)):
             path.parent.mkdir(parents=True, exist_ok=True)
-            payload = _payload_from_sample(sample, latent.unsqueeze(0))
+            ep_latent = None if episode_latents is None else episode_latents[n].unsqueeze(0)
+            payload = _payload_from_sample(sample, latent.unsqueeze(0), episode_latents=ep_latent)
             tmp_path = path.with_suffix(f".tmp.{os.getpid()}")
             torch.save(payload, tmp_path)
             os.replace(tmp_path, path)
+        timing["write"] += time.perf_counter() - write_start
+        timing["samples"] += len(batch)
 
     batch = []
     if sample_workers == 1:
@@ -226,10 +311,38 @@ def main():
                     batch.clear()
     flush(batch)
 
+    local_wall = time.perf_counter() - run_start
+    if args.timing_report:
+        timing_tensor = torch.tensor(
+            [timing["samples"], timing["load"], timing["encode"], timing["write"], local_wall],
+            dtype=torch.float64,
+            device=device,
+        )
+        sum_tensor = timing_tensor.clone()
+        max_tensor = timing_tensor.clone()
+        if dist.is_available() and dist.is_initialized():
+            dist.all_reduce(sum_tensor, op=dist.ReduceOp.SUM)
+            dist.all_reduce(max_tensor, op=dist.ReduceOp.MAX)
+        if rank == 0:
+            samples, load_s, encode_s, write_s, wall_sum = [float(x) for x in sum_tensor.detach().cpu()]
+            _, load_max, encode_max, write_max, wall_max = [float(x) for x in max_tensor.detach().cpu()]
+            denom = max(samples, 1.0)
+            print(
+                "[timing] "
+                f"samples={int(samples)} "
+                f"wall_max={wall_max:.3f}s "
+                f"throughput={samples / max(wall_max, 1e-9):.3f} samples/s "
+                f"load_sum={load_s:.3f}s load_per_sample={load_s / denom:.6f}s load_max_rank={load_max:.3f}s "
+                f"encode_sum={encode_s:.3f}s encode_per_sample={encode_s / denom:.6f}s encode_max_rank={encode_max:.3f}s "
+                f"write_sum={write_s:.3f}s write_per_sample={write_s / denom:.6f}s write_max_rank={write_max:.3f}s"
+            )
     if dist.is_available() and dist.is_initialized():
         dist.barrier(device_ids=barrier_device_ids)
     if rank == 0:
-        print(f"[precache] done output_dir={out_root} samples={num_samples}")
+        if manual_sharding:
+            print(f"[precache] shard_done output_dir={out_root} rank={rank}/{world_size} samples={num_samples}")
+        else:
+            print(f"[precache] done output_dir={out_root} samples={num_samples}")
     if dist.is_available() and dist.is_initialized():
         dist.destroy_process_group()
 

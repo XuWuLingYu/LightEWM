@@ -95,6 +95,24 @@ class CausalDiffusionInferencePipeline(torch.nn.Module):
             self.vertical_info = None
             self.vertical_token_step_budgets = None
 
+        if self.vertical_hierarchy and self.vertical_infer_fixed_denoise_steps > 0:
+            token_step_budgets = self.vertical_token_step_budgets
+            if hasattr(token_step_budgets, "detach"):
+                token_step_budgets = token_step_budgets.detach().cpu().tolist()
+            budget_values = sorted({int(x) for x in token_step_budgets})
+            plan_by_budget = {
+                budget: self._get_vertical_token_sampling_plan(budget)
+                for budget in budget_values
+            }
+            print(
+                "[VerticalInfer] "
+                f"sampling_steps={self.sampling_steps}, "
+                f"fixed_denoise_steps={self.vertical_infer_fixed_denoise_steps}, "
+                f"preserve_budget_ratio={self.vertical_infer_preserve_budget_ratio}, "
+                f"reference_total_steps={self.vertical_infer_reference_total_steps}, "
+                f"plan_by_original_budget={plan_by_budget}"
+            )
+
         print(f"KV inference with {self.num_frame_per_block} frames per block")
 
         if self.num_frame_per_block > 1:

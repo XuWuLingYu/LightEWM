@@ -38,7 +38,7 @@ runner:
       - num_epochs=10
       - max_steps=null
       - log_every=10
-      - save_every=500
+      - save_every=epoch
       - eval_every=500
       - +data.train.latent_cache_dir=../../../data/fastwamhdr_latent_cache_13f
       - +smoke_eval_step=0

@@ -1,5 +1,14 @@
 import argparse
 import os
+
+# The PPU runtime used by realbot-HDR cannot satisfy TorchInductor/Triton
+# ptxas discovery for flex_attention, so allow Dynamo to fall back to eager.
+try:
+    import torch._dynamo
+    torch._dynamo.config.suppress_errors = True
+except Exception:
+    pass
+
 from omegaconf import OmegaConf
 import wandb
 
