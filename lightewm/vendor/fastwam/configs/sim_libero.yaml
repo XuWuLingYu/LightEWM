@@ -28,6 +28,8 @@ EVALUATION:
   use_action_ensembler: false
   visualize_future_video: false
   save_rollout_video: true
+  save_failed_rollout_video: true
+  save_success_rollout_video_per_task: 1
   save_rollout_video_limit: null
   save_rollout_video_task_limit: null
 

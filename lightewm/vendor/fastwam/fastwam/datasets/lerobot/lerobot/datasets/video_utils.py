@@ -16,7 +16,9 @@
 import glob
 import importlib
 import logging
+import os
 import warnings
+from collections import OrderedDict
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, ClassVar
@@ -27,6 +29,9 @@ import torch
 import torchvision
 from datasets.features.features import register_feature
 from PIL import Image
+
+
+_FULL_VIDEO_CACHE = OrderedDict()
 
 
 def get_safe_default_codec():
@@ -69,10 +74,104 @@ def decode_video_frames(
                 f"torchcodec video decode failed ({type(err).__name__}: {err}); falling back to torchvision/pyav."
             )
             return decode_video_frames_torchvision(video_path, timestamps, tolerance_s, backend="pyav")
+    elif backend == "decord":
+        return decode_video_frames_decord(video_path, timestamps, tolerance_s)
+    elif backend == "pyav_full":
+        return decode_video_frames_pyav_full(video_path, timestamps, tolerance_s)
     elif backend in ["pyav", "video_reader"]:
         return decode_video_frames_torchvision(video_path, timestamps, tolerance_s, backend)
     else:
         raise ValueError(f"Unsupported video backend: {backend}")
+
+
+def _select_frames_from_loaded(video_path: str, frames: torch.Tensor, loaded_ts: torch.Tensor, timestamps: list[float], tolerance_s: float, backend: str) -> torch.Tensor:
+    query_ts = torch.tensor(timestamps, dtype=torch.float32)
+    loaded_ts = loaded_ts.to(dtype=torch.float32)
+    dist = torch.cdist(query_ts[:, None], loaded_ts[:, None], p=1)
+    min_, argmin_ = dist.min(1)
+    is_within_tol = min_ < tolerance_s
+    assert is_within_tol.all(), (
+        f"One or several query timestamps unexpectedly violate the tolerance ({min_[~is_within_tol]} > {tolerance_s=})."
+        "It means that the closest frame that can be loaded from the video is too far away in time."
+        f"\nqueried timestamps: {query_ts}"
+        f"\nloaded timestamps: {loaded_ts}"
+        f"\nvideo: {video_path}"
+        f"\nbackend: {backend}"
+    )
+    return frames[argmin_].type(torch.float32) / 255
+
+
+def decode_video_frames_pyav_full(
+    video_path: Path | str,
+    timestamps: list[float],
+    tolerance_s: float,
+) -> torch.Tensor:
+    video_path = str(video_path)
+    max_cached = max(int(os.environ.get("LIGHTEWM_PYAV_FULLCACHE_SIZE", "6")), 0)
+    cached = _FULL_VIDEO_CACHE.get(video_path)
+    if cached is not None:
+        _FULL_VIDEO_CACHE.move_to_end(video_path)
+        frames, loaded_ts = cached
+        return _select_frames_from_loaded(video_path, frames, loaded_ts, timestamps, tolerance_s, "pyav_full")
+
+    loaded_frames = []
+    loaded_ts = []
+    with av.open(video_path, "r") as container:
+        stream = container.streams.video[0]
+        fps = float(stream.average_rate or stream.base_rate or 0.0)
+        for frame_idx, frame in enumerate(container.decode(stream)):
+            array = frame.to_rgb().to_ndarray()
+            loaded_frames.append(torch.from_numpy(array).permute(2, 0, 1).contiguous())
+            if frame.pts is not None:
+                loaded_ts.append(float(frame.pts * stream.time_base))
+            elif fps > 0:
+                loaded_ts.append(frame_idx / fps)
+            else:
+                loaded_ts.append(float(frame_idx))
+
+    if not loaded_frames:
+        raise ValueError(f"No frames decoded from {video_path}")
+    frames = torch.stack(loaded_frames, dim=0)
+    loaded_ts = torch.tensor(loaded_ts, dtype=torch.float32)
+    if max_cached > 0:
+        _FULL_VIDEO_CACHE[video_path] = (frames, loaded_ts)
+        _FULL_VIDEO_CACHE.move_to_end(video_path)
+        while len(_FULL_VIDEO_CACHE) > max_cached:
+            _FULL_VIDEO_CACHE.popitem(last=False)
+    return _select_frames_from_loaded(video_path, frames, loaded_ts, timestamps, tolerance_s, "pyav_full")
+
+
+def decode_video_frames_decord(
+    video_path: Path | str,
+    timestamps: list[float],
+    tolerance_s: float,
+) -> torch.Tensor:
+    from decord import VideoReader, cpu
+
+    video_path = str(video_path)
+    num_threads = int(os.environ.get("LIGHTEWM_DECORD_THREADS", "1"))
+    reader = VideoReader(video_path, ctx=cpu(0), num_threads=num_threads)
+    fps = float(reader.get_avg_fps())
+    if fps <= 0:
+        raise ValueError(f"Invalid FPS from decord for {video_path}: {fps}")
+
+    max_index = len(reader) - 1
+    frame_indices = [min(max(int(round(ts * fps)), 0), max_index) for ts in timestamps]
+    loaded_ts = torch.tensor([idx / fps for idx in frame_indices], dtype=torch.float32)
+    query_ts = torch.tensor(timestamps, dtype=torch.float32)
+    delta = torch.abs(query_ts - loaded_ts)
+    is_within_tol = delta < max(float(tolerance_s), 1e-4)
+    assert is_within_tol.all(), (
+        f"One or several query timestamps unexpectedly violate the tolerance ({delta[~is_within_tol]} > {tolerance_s=})."
+        f"\nqueried timestamps: {query_ts}"
+        f"\nloaded timestamps: {loaded_ts}"
+        f"\nvideo: {video_path}"
+        "\nbackend: decord"
+    )
+
+    frames = reader.get_batch(frame_indices).asnumpy()
+    frames = torch.from_numpy(frames).permute(0, 3, 1, 2).contiguous()
+    return frames.type(torch.float32) / 255
 
 
 def decode_video_frames_torchvision(

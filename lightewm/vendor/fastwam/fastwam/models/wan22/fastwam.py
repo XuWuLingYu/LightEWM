@@ -38,7 +38,9 @@ class FastWAM(torch.nn.Module):
         action_num_train_timesteps: int = 1000,
         loss_lambda_video: float = 1.0,
         loss_lambda_action: float = 1.0,
+        episode_video_loss_scale: float = 1.0,
         action_attend_video: str = "full",
+        hdr_mode: str = "back_hdr",
     ):
         super().__init__()
         self.video_expert = video_expert
@@ -85,7 +87,9 @@ class FastWAM(torch.nn.Module):
         self.torch_dtype = torch_dtype
         self.loss_lambda_video = float(loss_lambda_video)
         self.loss_lambda_action = float(loss_lambda_action)
+        self.episode_video_loss_scale = float(episode_video_loss_scale)
         self.action_attend_video = str(action_attend_video)
+        self.hdr_mode = str(hdr_mode)
 
         self.to(self.device)
 
@@ -114,7 +118,9 @@ class FastWAM(torch.nn.Module):
         action_num_train_timesteps: int = 1000,
         loss_lambda_video: float = 1.0,
         loss_lambda_action: float = 1.0,
+        episode_video_loss_scale: float = 1.0,
         action_attend_video: str = "full",
+        hdr_mode: str = "back_hdr",
     ):
         if video_dit_config is None:
             raise ValueError("`video_dit_config` is required for FastWAM.from_wan22_pretrained().")
@@ -173,7 +179,9 @@ class FastWAM(torch.nn.Module):
             action_num_train_timesteps=action_num_train_timesteps,
             loss_lambda_video=loss_lambda_video,
             loss_lambda_action=loss_lambda_action,
+            episode_video_loss_scale=episode_video_loss_scale,
             action_attend_video=action_attend_video,
+            hdr_mode=hdr_mode,
         )
         model.model_paths = {
             "video_dit": components.dit_path,
@@ -281,7 +289,6 @@ class FastWAM(torch.nn.Module):
         return frames
 
     def build_inputs(self, sample, tiled: bool = False):
-        video = sample["video"]
         if "context" not in sample or "context_mask" not in sample:
             raise ValueError(
                 "FastWAM training requires `sample['context']` and `sample['context_mask']`."
@@ -289,20 +296,121 @@ class FastWAM(torch.nn.Module):
         context = sample["context"]
         context_mask = sample["context_mask"]
         proprio = sample.get("proprio", None)
-        if video.ndim != 5:
-            raise ValueError(f"`sample['video']` must be 5D [B, 3, T, H, W], got shape {tuple(video.shape)}")
-        if video.shape[1] != 3:
-            raise ValueError(f"`sample['video']` channel dimension must be 3, got shape {tuple(video.shape)}")
-
-        batch_size, _, num_frames, height, width = video.shape
-        if height % 16 != 0 or width % 16 != 0:
-            raise ValueError(
-                f"Video spatial dims must be multiples of 16, got H={height}, W={width}"
+        cached_input_latents = sample.get("input_latents", None)
+        cached_first_frame_latents = sample.get("first_frame_latents", None)
+        clean_latent_indices = sample.get("clean_latent_indices", None)
+        episode_video_latent_indices = sample.get("episode_video_latent_indices", None)
+        local_video_latent_indices = sample.get("local_video_latent_indices", None)
+        if cached_input_latents is not None:
+            if cached_input_latents.ndim != 5:
+                raise ValueError(
+                    "`sample['input_latents']` must be 5D [B,C,T,H,W], "
+                    f"got shape {tuple(cached_input_latents.shape)}"
+                )
+            batch_size = int(cached_input_latents.shape[0])
+            input_latents = cached_input_latents.to(device=self.device, dtype=self.torch_dtype, non_blocking=True)
+            first_frame_latents = None
+            fuse_flag = False
+            if getattr(self.video_expert, "fuse_vae_embedding_in_latents", False):
+                if clean_latent_indices is not None:
+                    clean_latent_indices = torch.as_tensor(clean_latent_indices, device=self.device, dtype=torch.long).flatten()
+                    first_frame_latents = None
+                elif cached_first_frame_latents is None:
+                    first_frame_latents = input_latents[:, :, 0:1]
+                else:
+                    if cached_first_frame_latents.ndim != 5:
+                        raise ValueError(
+                            "`sample['first_frame_latents']` must be 5D [B,C,1,H,W], "
+                            f"got shape {tuple(cached_first_frame_latents.shape)}"
+                        )
+                    first_frame_latents = cached_first_frame_latents.to(
+                        device=self.device,
+                        dtype=self.torch_dtype,
+                        non_blocking=True,
+                    )
+                    if first_frame_latents.shape[0] != batch_size or first_frame_latents.shape[2] != 1:
+                        raise ValueError(
+                            "`sample['first_frame_latents']` shape mismatch: "
+                            f"{tuple(first_frame_latents.shape)}"
+                        )
+                fuse_flag = True
+            num_frames_value = sample.get(
+                "num_video_frames",
+                (input_latents.shape[2] - 1) * int(self.vae.temporal_downsample_factor) + 1,
             )
-        if num_frames % 4 != 1:
-            raise ValueError(f"Video T must satisfy T % 4 == 1, got T={num_frames}")
-        if num_frames <= 1:
-            raise ValueError(f"Video T must be > 1 for action-conditioned training, got T={num_frames}")
+            num_frames = int(torch.as_tensor(num_frames_value).reshape(-1)[0].item())
+        else:
+            video = sample["video"]
+            if video.ndim != 5:
+                raise ValueError(f"`sample['video']` must be 5D [B, 3, T, H, W], got shape {tuple(video.shape)}")
+            if video.shape[1] != 3:
+                raise ValueError(f"`sample['video']` channel dimension must be 3, got shape {tuple(video.shape)}")
+
+            batch_size, _, num_frames, height, width = video.shape
+            if height % 16 != 0 or width % 16 != 0:
+                raise ValueError(
+                    f"Video spatial dims must be multiples of 16, got H={height}, W={width}"
+                )
+            if num_frames % 4 != 1:
+                raise ValueError(f"Video T must satisfy T % 4 == 1, got T={num_frames}")
+            if num_frames <= 1:
+                raise ValueError(f"Video T must be > 1 for action-conditioned training, got T={num_frames}")
+
+            first_frame_latents = None
+            fuse_flag = False
+            if sample.get("hdr_mode") in {"episode_first_hdr", "episode_back_mixed", "episode_first_special_latent"} and sample.get("episode_video") is not None:
+                episode_video = sample["episode_video"]
+                if episode_video.ndim != 5:
+                    raise ValueError(
+                        "`sample['episode_video']` must be 5D [B, 3, T, H, W], "
+                        f"got shape {tuple(episode_video.shape)}"
+                    )
+                if episode_video.shape[0] != batch_size or episode_video.shape[1] != 3:
+                    raise ValueError(
+                        "`sample['episode_video']` batch/channel mismatch: "
+                        f"got shape {tuple(episode_video.shape)}"
+                    )
+                if episode_video.shape[-2:] != video.shape[-2:]:
+                    raise ValueError(
+                        "`sample['episode_video']` spatial size must match `sample['video']`, "
+                        f"got {tuple(episode_video.shape[-2:])} vs {tuple(video.shape[-2:])}"
+                    )
+                if episode_video.shape[2] % 4 != 1:
+                    raise ValueError(f"Episode video T must satisfy T % 4 == 1, got T={episode_video.shape[2]}")
+                episode_latents = self._encode_video_latents(
+                    episode_video.to(device=self.device, dtype=self.torch_dtype, non_blocking=True),
+                    tiled=tiled,
+                )
+                local_latents = self._encode_video_latents(
+                    video.to(device=self.device, dtype=self.torch_dtype, non_blocking=True),
+                    tiled=tiled,
+                )
+                input_latents = torch.cat([episode_latents, local_latents], dim=2).contiguous()
+                clean_latent_indices = torch.tensor(
+                    [0, int(episode_latents.shape[2])],
+                    device=self.device,
+                    dtype=torch.long,
+                )
+                episode_video_latent_indices = torch.arange(
+                    1,
+                    int(episode_latents.shape[2]),
+                    device=self.device,
+                    dtype=torch.long,
+                )
+                local_video_latent_indices = torch.arange(
+                    int(episode_latents.shape[2]) + 1,
+                    int(episode_latents.shape[2]) + int(local_latents.shape[2]),
+                    device=self.device,
+                    dtype=torch.long,
+                )
+                if getattr(self.video_expert, "fuse_vae_embedding_in_latents", False):
+                    fuse_flag = True
+            else:
+                input_video = video.to(device=self.device, dtype=self.torch_dtype, non_blocking=True)
+                input_latents = self._encode_video_latents(input_video, tiled=tiled)
+                if getattr(self.video_expert, "fuse_vae_embedding_in_latents", False):
+                    first_frame_latents = input_latents[:, :, 0:1]
+                    fuse_flag = True
 
         if "action" not in sample:
             raise ValueError("`sample['action']` is required for FastWAM training.")
@@ -324,6 +432,9 @@ class FastWAM(torch.nn.Module):
                 f"video transitions ({transition_count}), got {action_horizon}"
             )
 
+        action_adapter = sample.get("action_adapter", None)
+        action_dim_is_pad = sample.get("action_dim_is_pad", None)
+
         action_is_pad = sample.get("action_is_pad", None)
         if action_is_pad is not None:
             if action_is_pad.ndim != 2:
@@ -337,7 +448,7 @@ class FastWAM(torch.nn.Module):
                 )
 
         image_is_pad = sample.get("image_is_pad", None)
-        if image_is_pad is not None:
+        if image_is_pad is not None and clean_latent_indices is None:
             if image_is_pad.ndim != 2:
                 raise ValueError(
                     f"`sample['image_is_pad']` must be 2D [B, T], got shape {tuple(image_is_pad.shape)}"
@@ -347,16 +458,6 @@ class FastWAM(torch.nn.Module):
                     "`sample['image_is_pad']` shape mismatch: "
                     f"got {tuple(image_is_pad.shape)} vs expected ({batch_size}, {num_frames})"
                 )
-        
-        input_video = video.to(device=self.device, dtype=self.torch_dtype, non_blocking=True)
-        input_latents = self._encode_video_latents(input_video, tiled=tiled)
-
-        first_frame_latents = None
-        fuse_flag = False
-        if getattr(self.video_expert, "fuse_vae_embedding_in_latents", False):
-            first_frame_latents = input_latents[:, :, 0:1]
-            fuse_flag = True
-
         if context.ndim != 3 or context_mask.ndim != 2:
             raise ValueError(
                 f"`context/context_mask` must be [B,L,D]/[B,L], got {tuple(context.shape)} and {tuple(context_mask.shape)}"
@@ -384,6 +485,19 @@ class FastWAM(torch.nn.Module):
             action_is_pad = action_is_pad.to(device=self.device, dtype=torch.bool, non_blocking=True)
         if image_is_pad is not None:
             image_is_pad = image_is_pad.to(device=self.device, dtype=torch.bool, non_blocking=True)
+        if action_dim_is_pad is not None:
+            if action_dim_is_pad.ndim == 1:
+                action_dim_is_pad = action_dim_is_pad.unsqueeze(0).expand(batch_size, -1)
+            if action_dim_is_pad.ndim != 2:
+                raise ValueError(
+                    f"`sample['action_dim_is_pad']` must be [B,D] or [D], got {tuple(action_dim_is_pad.shape)}"
+                )
+            if action_dim_is_pad.shape[0] != batch_size or action_dim_is_pad.shape[1] != action.shape[2]:
+                raise ValueError(
+                    "`sample['action_dim_is_pad']` shape mismatch: "
+                    f"got {tuple(action_dim_is_pad.shape)} vs expected ({batch_size}, {action.shape[2]})"
+                )
+            action_dim_is_pad = action_dim_is_pad.to(device=self.device, dtype=torch.bool, non_blocking=True)
 
         return {
             "context": context,
@@ -393,7 +507,12 @@ class FastWAM(torch.nn.Module):
             "fuse_vae_embedding_in_latents": fuse_flag,
             "action": action,
             "action_is_pad": action_is_pad,
+            "action_dim_is_pad": action_dim_is_pad,
+            "action_adapter": action_adapter,
             "image_is_pad": image_is_pad,
+            "clean_latent_indices": clean_latent_indices,
+            "episode_video_latent_indices": None if episode_video_latent_indices is None else torch.as_tensor(episode_video_latent_indices, device=self.device, dtype=torch.long).flatten(),
+            "local_video_latent_indices": None if local_video_latent_indices is None else torch.as_tensor(local_video_latent_indices, device=self.device, dtype=torch.long).flatten(),
         }
 
     @torch.no_grad()
@@ -478,7 +597,10 @@ class FastWAM(torch.nn.Module):
         latents = self.train_video_scheduler.add_noise(input_latents, noise_video, timestep_video)
         target_video = self.train_video_scheduler.training_target(input_latents, noise_video, timestep_video)
 
-        if inputs["first_frame_latents"] is not None:
+        if inputs.get("clean_latent_indices") is not None:
+            clean_idx = inputs["clean_latent_indices"].to(device=latents.device, dtype=torch.long)
+            latents.index_copy_(2, clean_idx, input_latents.index_select(2, clean_idx))
+        elif inputs["first_frame_latents"] is not None:
             latents[:, :, 0:1] = inputs["first_frame_latents"]
 
         noise_action = torch.randn_like(action)
@@ -497,6 +619,7 @@ class FastWAM(torch.nn.Module):
             context_mask=context_mask,
             action=action,
             fuse_vae_embedding_in_latents=inputs["fuse_vae_embedding_in_latents"],
+            clean_latent_indices=inputs.get("clean_latent_indices"),
         )
 
         action_pre = self.action_expert.pre_dit(
@@ -504,6 +627,7 @@ class FastWAM(torch.nn.Module):
             timestep=timestep_action,
             context=context,
             context_mask=context_mask,
+            action_adapter=inputs.get("action_adapter"),
         )
 
         video_tokens = video_pre["tokens"]
@@ -545,23 +669,49 @@ class FastWAM(torch.nn.Module):
 
         pred_action = self.action_expert.post_dit(tokens_out["action"], action_pre)
 
-        include_initial_video_step = inputs["first_frame_latents"] is None
-        if inputs["first_frame_latents"] is not None:
-            pred_video = pred_video[:, :, 1:]
-            target_video = target_video[:, :, 1:]
-
-        loss_video_per_sample = self._compute_video_loss_per_sample(
-            pred_video=pred_video,
-            target_video=target_video,
-            image_is_pad=image_is_pad,
-            include_initial_video_step=include_initial_video_step,
-        )
         video_weight = self.train_video_scheduler.training_weight(timestep_video).to(
-            loss_video_per_sample.device, dtype=loss_video_per_sample.dtype
+            pred_video.device, dtype=pred_video.dtype
         )
+        loss_video_episode = None
+        loss_video_local = None
+        if inputs.get("clean_latent_indices") is not None:
+            video_loss_token = F.mse_loss(pred_video.float(), target_video.float(), reduction="none").mean(dim=(1, 3, 4))
+            clean_idx = inputs["clean_latent_indices"].to(device=video_loss_token.device, dtype=torch.long)
+            valid = torch.ones(video_loss_token.shape[1], device=video_loss_token.device, dtype=torch.bool)
+            valid[clean_idx] = False
+            loss_video_per_sample = (video_loss_token * valid.to(video_loss_token.dtype).unsqueeze(0)).sum(dim=1) / valid.sum().clamp(min=1)
+            episode_idx = inputs.get("episode_video_latent_indices")
+            local_idx = inputs.get("local_video_latent_indices")
+            if episode_idx is not None and episode_idx.numel() > 0:
+                episode_idx = episode_idx.to(video_loss_token.device)
+                loss_video_episode = video_loss_token.index_select(1, episode_idx).mean(dim=1)
+            if local_idx is not None and local_idx.numel() > 0:
+                local_idx = local_idx.to(video_loss_token.device)
+                loss_video_local = video_loss_token.index_select(1, local_idx).mean(dim=1)
+            if loss_video_episode is not None and loss_video_local is not None:
+                scaled_episode = loss_video_episode * self.episode_video_loss_scale
+                loss_video_per_sample = 0.5 * (scaled_episode + loss_video_local)
+        else:
+            include_initial_video_step = inputs["first_frame_latents"] is None
+            if inputs["first_frame_latents"] is not None:
+                pred_video = pred_video[:, :, 1:]
+                target_video = target_video[:, :, 1:]
+            loss_video_per_sample = self._compute_video_loss_per_sample(
+                pred_video=pred_video,
+                target_video=target_video,
+                image_is_pad=image_is_pad,
+                include_initial_video_step=include_initial_video_step,
+            )
         loss_video = (loss_video_per_sample * video_weight).mean()
 
-        action_loss_token = F.mse_loss(pred_action.float(), target_action.float(), reduction="none").mean(dim=2) # [B, T]
+        action_loss_raw = F.mse_loss(pred_action.float(), target_action.float(), reduction="none")
+        action_dim_is_pad = inputs.get("action_dim_is_pad")
+        if action_dim_is_pad is not None:
+            valid_dim = (~action_dim_is_pad).to(device=action_loss_raw.device, dtype=action_loss_raw.dtype).unsqueeze(1)
+            denom = valid_dim.sum(dim=2).clamp(min=1.0)
+            action_loss_token = (action_loss_raw * valid_dim).sum(dim=2) / denom
+        else:
+            action_loss_token = action_loss_raw.mean(dim=2) # [B, T]
         if action_is_pad is not None:
             valid = (~action_is_pad).to(device=action_loss_token.device, dtype=action_loss_token.dtype)
             valid_sum = valid.sum(dim=1).clamp(min=1.0)
@@ -579,6 +729,14 @@ class FastWAM(torch.nn.Module):
             "loss_video": self.loss_lambda_video * float(loss_video.detach().item()),
             "loss_action": self.loss_lambda_action * float(loss_action.detach().item()),
         }
+        if loss_video_episode is not None:
+            loss_dict["loss_video_episode"] = self.loss_lambda_video * float((loss_video_episode * video_weight).mean().detach().item())
+            loss_dict["loss_video_episode_scaled"] = self.loss_lambda_video * float(
+                ((loss_video_episode * self.episode_video_loss_scale) * video_weight).mean().detach().item()
+            )
+            loss_dict["episode_video_loss_scale"] = float(self.episode_video_loss_scale)
+        if loss_video_local is not None:
+            loss_dict["loss_video_local"] = self.loss_lambda_video * float((loss_video_local * video_weight).mean().detach().item())
         return loss_total, loss_dict
 
     @torch.no_grad()
@@ -592,6 +750,8 @@ class FastWAM(torch.nn.Module):
         context_mask: torch.Tensor,
         fuse_vae_embedding_in_latents: bool,
         gt_action: Optional[torch.Tensor] = None,
+        clean_latent_indices: Optional[torch.Tensor] = None,
+        action_adapter: Optional[str | Sequence[str]] = None,
     ) -> tuple[torch.Tensor, torch.Tensor]:
         video_pre = self.video_expert.pre_dit(
             x=latents_video,
@@ -600,12 +760,14 @@ class FastWAM(torch.nn.Module):
             context_mask=context_mask,
             action=gt_action,
             fuse_vae_embedding_in_latents=fuse_vae_embedding_in_latents,
+            clean_latent_indices=clean_latent_indices,
         )
         action_pre = self.action_expert.pre_dit(
             action_tokens=latents_action,
             timestep=timestep_action,
             context=context,
             context_mask=context_mask,
+            action_adapter=action_adapter,
         )
 
         attention_mask = self._build_mot_attention_mask(
@@ -654,6 +816,7 @@ class FastWAM(torch.nn.Module):
         context: torch.Tensor,
         context_mask: torch.Tensor,
         fuse_vae_embedding_in_latents: bool,
+        action_adapter: Optional[str | Sequence[str]] = None,
     ) -> torch.Tensor:
         timestep_video = torch.zeros_like(timestep_action, dtype=first_frame_latents.dtype, device=self.device)
         video_pre = self.video_expert.pre_dit(
@@ -669,6 +832,7 @@ class FastWAM(torch.nn.Module):
             timestep=timestep_action,
             context=context,
             context_mask=context_mask,
+            action_adapter=action_adapter,
         )
 
         attention_mask = self._build_mot_attention_mask(
@@ -715,12 +879,14 @@ class FastWAM(torch.nn.Module):
         video_kv_cache: list[dict[str, torch.Tensor]],
         attention_mask: torch.Tensor,
         video_seq_len: int,
+        action_adapter: Optional[str | Sequence[str]] = None,
     ) -> torch.Tensor:
         action_pre = self.action_expert.pre_dit(
             action_tokens=latents_action,
             timestep=timestep_action,
             context=context,
             context_mask=context_mask,
+            action_adapter=action_adapter,
         )
         action_tokens = self.mot.forward_action_with_video_cache(
             action_tokens=action_pre["tokens"],
@@ -755,6 +921,7 @@ class FastWAM(torch.nn.Module):
         rand_device: str = "cpu",
         tiled: bool = False,
         test_action_with_infer_action: bool = True,
+        action_adapter: Optional[str | Sequence[str]] = None,
     ) -> dict[str, Any]:
         self.eval()
         if test_action_with_infer_action:
@@ -772,6 +939,7 @@ class FastWAM(torch.nn.Module):
                 rand_device=rand_device,
                 tiled=tiled,
                 proprio=proprio.clone() if proprio is not None else None,
+                action_adapter=action_adapter,
             )["action"]
         
         if input_image.ndim == 3:
@@ -895,6 +1063,7 @@ class FastWAM(torch.nn.Module):
                 context_mask=context_mask,
                 fuse_vae_embedding_in_latents=fuse_flag,
                 gt_action=action,
+                action_adapter=action_adapter,
             )
             pred_video = pred_video_posi
             pred_action = pred_action_posi
@@ -932,6 +1101,7 @@ class FastWAM(torch.nn.Module):
         seed: Optional[int] = None,
         rand_device: str = "cpu",
         tiled: bool = False,
+        action_adapter: Optional[str | Sequence[str]] = None,
     ) -> dict[str, Any]:
         self.eval()
         if str(getattr(self.video_expert, "video_attention_mask_mode", "")) != "first_frame_causal":
@@ -1052,6 +1222,7 @@ class FastWAM(torch.nn.Module):
                 video_kv_cache=video_kv_cache,
                 attention_mask=attention_mask,
                 video_seq_len=video_seq_len,
+                action_adapter=action_adapter,
             )
             pred_action = pred_action_posi
 
@@ -1080,6 +1251,7 @@ class FastWAM(torch.nn.Module):
         seed: Optional[int] = None,
         rand_device: str = "cpu",
         tiled: bool = False,
+        action_adapter: Optional[str | Sequence[str]] = None,
     ):
         return self.infer_joint(
             prompt=prompt,
@@ -1097,6 +1269,7 @@ class FastWAM(torch.nn.Module):
             seed=seed,
             rand_device=rand_device,
             tiled=tiled,
+            action_adapter=action_adapter,
         )
 
     def save_checkpoint(self, path, optimizer=None, step=None):
@@ -1111,13 +1284,118 @@ class FastWAM(torch.nn.Module):
             payload["optimizer"] = optimizer.state_dict()
         torch.save(payload, path)
 
+    @staticmethod
+    def _load_shape_compatible_state(
+        module,
+        state_dict,
+        label: str,
+        *,
+        min_loaded_tensors: int = 1,
+        min_loaded_fraction: float = 0.0,
+        required_prefixes: Sequence[str] = (),
+    ):
+        current = module.state_dict()
+        compatible = {}
+        skipped = []
+        unexpected = []
+        checkpoint_tensor_count = 0
+        checkpoint_tensor_numel = 0
+        loaded_numel = 0
+        for key, value in state_dict.items():
+            if not isinstance(value, torch.Tensor):
+                expected = tuple(current[key].shape) if key in current else None
+                skipped.append((key, expected, type(value).__name__))
+                continue
+            checkpoint_tensor_count += 1
+            checkpoint_tensor_numel += int(value.numel())
+            if key not in current:
+                unexpected.append(key)
+                continue
+            if tuple(value.shape) != tuple(current[key].shape):
+                skipped.append((key, tuple(current[key].shape), tuple(value.shape)))
+                continue
+            compatible[key] = value
+            loaded_numel += int(value.numel())
+        missing, extra = module.load_state_dict(compatible, strict=False)
+        loaded_tensors = len(compatible)
+        key_fraction = loaded_tensors / max(checkpoint_tensor_count, 1)
+        numel_fraction = loaded_numel / max(checkpoint_tensor_numel, 1)
+        prefix_hits = {
+            prefix: sum(1 for key in compatible if key.startswith(prefix))
+            for prefix in required_prefixes
+        }
+        logger.warning(
+            "Loaded %d/%d %s checkpoint tensors (%.2f%% keys, %.2f%% numel); "
+            "missing=%d skipped=%d unexpected=%d required_prefix_hits=%s",
+            loaded_tensors,
+            checkpoint_tensor_count,
+            label,
+            key_fraction * 100.0,
+            numel_fraction * 100.0,
+            len(missing),
+            len(skipped),
+            len(unexpected),
+            prefix_hits,
+        )
+        if skipped:
+            preview = ", ".join(f"{k}: expected {exp}, got {got}" for k, exp, got in skipped[:8])
+            logger.warning("Skipped %d shape-incompatible %s checkpoint tensors: %s%s", len(skipped), label, preview, " ..." if len(skipped) > 8 else "")
+        if unexpected:
+            logger.warning("Ignored %d unexpected %s checkpoint tensors; first keys=%s", len(unexpected), label, unexpected[:8])
+        if missing:
+            logger.warning("Missing %d %s tensors after compatible load; first keys=%s", len(missing), label, list(missing)[:8])
+        if extra:
+            logger.warning("Extra %d %s tensors after compatible load; first keys=%s", len(extra), label, list(extra)[:8])
+        failures = []
+        if loaded_tensors < int(min_loaded_tensors):
+            failures.append(f"loaded_tensors {loaded_tensors} < required {int(min_loaded_tensors)}")
+        if key_fraction < float(min_loaded_fraction):
+            failures.append(
+                f"loaded_key_fraction {key_fraction:.4f} < required {float(min_loaded_fraction):.4f}"
+            )
+        for prefix, count in prefix_hits.items():
+            if count <= 0:
+                failures.append(f"required prefix {prefix!r} loaded 0 tensors")
+        if failures:
+            raise RuntimeError(
+                f"Checkpoint load coverage too low for {label}: "
+                + "; ".join(failures)
+                + f". loaded={loaded_tensors}/{checkpoint_tensor_count}, "
+                + f"skipped={len(skipped)}, unexpected={len(unexpected)}, missing={len(missing)}"
+            )
+        return {
+            "loaded_tensors": loaded_tensors,
+            "checkpoint_tensors": checkpoint_tensor_count,
+            "loaded_numel": loaded_numel,
+            "checkpoint_numel": checkpoint_tensor_numel,
+            "key_fraction": key_fraction,
+            "numel_fraction": numel_fraction,
+            "missing": len(missing),
+            "skipped": len(skipped),
+            "unexpected": len(unexpected),
+            "required_prefix_hits": prefix_hits,
+        }
+
     def load_checkpoint(self, path, optimizer=None):
         payload = torch.load(path, map_location="cpu")
         if "mot" in payload:
-            self.mot.load_state_dict(payload["mot"], strict=False)
+            self._load_shape_compatible_state(
+                self.mot,
+                payload["mot"],
+                "mot",
+                min_loaded_tensors=1000,
+                min_loaded_fraction=0.95,
+                required_prefixes=("mixtures.video.", "mixtures.action."),
+            )
         elif "dit" in payload:
             logger.warning("Loading legacy `dit` checkpoint into video expert only.")
-            self.video_expert.load_state_dict(payload["dit"], strict=False)
+            self._load_shape_compatible_state(
+                self.video_expert,
+                payload["dit"],
+                "video_expert",
+                min_loaded_tensors=100,
+                min_loaded_fraction=0.50,
+            )
         else:
             raise ValueError(f"Checkpoint missing both `mot` and `dit` keys: {path}")
         if self.proprio_encoder is not None:

@@ -87,6 +87,24 @@ def _validate_dit_config(dit_config: dict[str, Any]) -> dict[str, Any]:
     return validated
 
 
+def _normalize_model_path(path, label: str):
+    if isinstance(path, (list, tuple)):
+        if len(path) == 0:
+            raise FileNotFoundError(f"`{label}` resolved to an empty file list.")
+        normalized = []
+        for item in path:
+            item_path = Path(str(item)).expanduser()
+            if not item_path.is_file():
+                raise FileNotFoundError(f"`{label}` file does not exist: {item}")
+            normalized.append(str(item_path))
+        return normalized
+
+    path_obj = Path(str(path)).expanduser()
+    if not path_obj.is_file():
+        raise FileNotFoundError(f"`{label}` does not exist: {path}")
+    return str(path_obj)
+
+
 def _load_registered_model(
     path,
     model_name: str,
@@ -178,14 +196,12 @@ def load_wan22_ti2v_5b_components(
         dit_path = SKIPPED_PRETRAIN_SENTINEL
     else:
         if dit_pretrained_path:
-            dit_path_obj = Path(dit_pretrained_path).expanduser()
-            if not dit_path_obj.is_file():
-                raise FileNotFoundError(f"`dit_pretrained_path` does not exist: {dit_pretrained_path}")
+            dit_path_obj = _normalize_model_path(dit_pretrained_path, "dit_pretrained_path")
         else:
             dit_model_config.download_if_necessary()
-            dit_path_obj = Path(dit_model_config.path)
+            dit_path_obj = _normalize_model_path(dit_model_config.path, "resolved DiT path")
         dit = _load_registered_model(
-            str(dit_path_obj),
+            dit_path_obj,
             "wan_video_dit",
             torch_dtype=torch_dtype,
             device=device,

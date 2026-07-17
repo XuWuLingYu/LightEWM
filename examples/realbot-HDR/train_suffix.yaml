@@ -1,0 +1,50 @@
+task: train
+
+runner:
+  class_path: lightewm.runner.causal_forcing.CausalForcingRunner
+  params:
+    output_path: ./logs/train/realbot-HDR
+    backend_root: lightewm/vendor/causal_forcing
+    official_config_path: lightewm/vendor/causal_forcing/configs/maze_recursive_7_11_17_26_40_50_all_condition_push_v4.yaml
+    model_root: checkpoints
+    num_processes: 8
+    master_port: 29661
+    no_visualize: true
+    causal_config_overrides:
+      wandb_project: LightEWM-realbot-HDR
+      train_timer: true
+      train_timer_first_steps: 5
+      train_timer_interval: 10
+      train_timer_sync_cuda: true
+      height: 384
+      width: 320
+      num_frames: 61
+      image_or_video_shape: [1, 16, 48, 24, 20]
+      batch_size: 1
+      total_batch_size: 8
+      lr: 2.0e-06
+      log_iters: 3000
+      max_train_steps: 50000
+      num_workers: 4
+      variable_num_frames_train: false
+      max_training_video_frames: 61
+      vertical_leaf_frames: 16
+      vertical_level_sizes: [1, 2, 4, 8, 16]
+      vertical_step_budgets: [7, 11, 18, 31, 50]
+      load_raw_video: true
+      data_backend: jsonl_video
+      condition_first_frame: true
+      vertical_hierarchy: true
+      vertical_allow_condition_for_all_frames: true
+      model_kwargs:
+        timestep_shift: 1.0
+        seq_len: 3720
+
+dataset:
+  class_path: lightewm.dataset.causal_forcing.CausalForcingJsonlAdapter
+  params:
+    base_path: data/realbot_hdr_video_320x384_z0415_61f_suffix10
+    metadata_path: data/realbot_hdr_video_320x384_z0415_61f_suffix10/metadata_train_preencoded.csv
+    video_key: video
+    prompt_key: prompt
+    fallback_prompt_keys: [dense_prompt, sparse_prompt]

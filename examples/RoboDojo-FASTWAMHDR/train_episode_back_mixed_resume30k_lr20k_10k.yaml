@@ -1,0 +1,74 @@
+task: train
+
+runner:
+  class_path: lightewm.runner.fastwam.FastWAMRunner
+  params:
+    fastwam_root: lightewm/vendor/fastwam
+    output_path: ./logs/train/RoboDojo-FASTWAMHDR-episode_back_mixed
+    num_processes: 8
+    zero_stage: 1
+    resume: null
+
+    fastwam_task: robotwin_uncond_3cam_384_1e-4
+    fastwam_model: fastwam_joint
+    fastwam_data: robotwin
+
+    # Match XPolicyLab FastWAM RoboDojo data setup, initialized from Wan2.2 robot weights.
+    model_id: Wan-AI/Wan2.2-TI2V-5B
+    tokenizer_model_id: Wan-AI/Wan2.1-T2V-1.3B
+    video_dit_pretrained_path: checkpoints/Wan2.2-5B-Robot/checkpoint.safetensors
+    action_dit_pretrained_path: checkpoints/ActionDiT_linear_interp_Wan22Robot_alphascale_1024hdim.pt
+
+    dataset_dirs:
+      - data/robodojo_fastwam/robodojo-v21-video/lerobot
+    text_embedding_cache_dir: data/text_embeds_cache/robodojo_fastwam/full
+
+    hydra_overrides:
+      - batch_size=8
+      - num_workers=0
+      - model.redirect_common_files=false
+      - model.mot_checkpoint_mixed_attn=false
+      - model.action_attend_video=local_clean_first
+      - model.hdr_mode=episode_back_mixed
+      - lr_scheduler_type=cosine
+      - learning_rate=1e-4
+      - num_epochs=200000
+      - max_steps=40000
+      - lr_scheduler_resume_step=20000
+      - lr_scheduler_total_steps=30000
+      - log_every=10
+      - save_every=epoch
+      - eval_every=500
+      - eval_num_inference_steps=10
+      - gradient_accumulation_steps=2
+      - weight_decay=1e-2
+      - mixed_precision=bf16
+      - max_grad_norm=1.0
+      - wandb.enabled=true
+      - wandb.project=LightEWM-RoboDojo-FASTWAMHDR
+      - wandb.name=robodojo-v21-fastwamhdr-episode-back-mixed-resume30k-lr20k-sched30k-10k
+      - data.val.dataset_dirs=[../../../data/robodojo_fastwam/robodojo-v21-video/lerobot]
+      - data.val.text_embedding_cache_dir=../../../data/text_embeds_cache/robodojo_fastwam/full
+      - data.train.pretrained_norm_stats=../../../data/robodojo_fastwam/robodojo-v21-video/dataset_stats.json
+      - data.val.pretrained_norm_stats=../../../data/robodojo_fastwam/robodojo-v21-video/dataset_stats.json
+      - +data.train.latent_cache_dir=../../../data/robodojo_fastwam_latent_cache_episode_back_mixed_13f
+      - data.train.video_size=[384,320]
+      - data.val.video_size=[384,320]
+      - data.train.concat_multi_camera=robotwin
+      - data.val.concat_multi_camera=robotwin
+      - data.train.processor.action_state_transforms=null
+      - data.val.processor.action_state_transforms=null
+      - data.train.processor.norm_default_mode=z-score
+      - data.val.processor.norm_default_mode=z-score
+      - +data.train.hdr_enabled=true
+      - +data.val.hdr_enabled=true
+      - +data.train.hdr_mode=episode_back_mixed
+      - +data.val.hdr_mode=episode_back_mixed
+      - +data.train.hdr_local_rgb_frames=9
+      - +data.val.hdr_local_rgb_frames=9
+      - +data.train.hdr_tree_rgb_frames=4
+      - +data.val.hdr_tree_rgb_frames=4
+      - +data.train.hdr_total_rgb_frames=13
+      - +data.val.hdr_total_rgb_frames=13
+      - +data.train.hdr_tree_sampling=uniform_local_start_to_end
+      - +data.val.hdr_tree_sampling=uniform_local_start_to_end

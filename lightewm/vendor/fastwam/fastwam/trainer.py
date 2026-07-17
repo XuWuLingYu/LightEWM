@@ -6,11 +6,13 @@ import re
 from math import ceil
 from pathlib import Path
 import time
+from datetime import timedelta
 
 import numpy as np
 import torch
 from accelerate import Accelerator
-from omegaconf import DictConfig
+from accelerate.utils import InitProcessGroupKwargs
+from omegaconf import DictConfig, OmegaConf
 from PIL import Image
 from torch.optim.lr_scheduler import ConstantLR, CosineAnnealingLR, LinearLR, SequentialLR
 from torch.utils.data import DataLoader
@@ -26,10 +28,11 @@ logger = get_logger(__name__)
 
 
 class Wan22Trainer:
-    def __init__(self, model, train_dataset, val_dataset=None, *, cfg: DictConfig):
+    def __init__(self, model, train_dataset, val_dataset=None, aux_video_dataset=None, *, cfg: DictConfig):
         self.model = model
         self.train_dataset = train_dataset
         self.val_dataset = val_dataset
+        self.aux_video_dataset = aux_video_dataset
         self.cfg = cfg
         self.output_dir = str(cfg.output_dir)
         self.learning_rate = float(cfg.learning_rate)
@@ -40,15 +43,22 @@ class Wan22Trainer:
         max_steps = cfg.max_steps
         self.max_steps = int(max_steps) if max_steps is not None else None
         self.log_every = int(cfg.log_every)
-        self.save_every = int(cfg.save_every)
+        save_every = cfg.save_every
+        self.save_every_is_epoch = str(save_every).strip().lower() in {"epoch", "1epoch", "every_epoch"}
+        self.save_every = 0 if self.save_every_is_epoch else int(save_every)
         self.eval_every = int(cfg.eval_every)
         self.smoke_eval_step = int(cfg.get("smoke_eval_step", 0))
         self.eval_num_inference_steps = int(cfg.eval_num_inference_steps)
         self.gradient_accumulation_steps = int(cfg.gradient_accumulation_steps)
         self.max_grad_norm = float(cfg.max_grad_norm)
         self.seed = int(cfg.seed)
+        self.aux_video_loss_weight = float(cfg.get("aux_video_loss_weight", 1.0))
+        self.aux_video_action_loss_weight = float(cfg.get("aux_video_action_loss_weight", 0.0))
         
         self.resume = cfg.resume
+        self.reset_step_on_weight_load = bool(cfg.get("reset_step_on_weight_load", False))
+        self.lr_scheduler_resume_step = cfg.get("lr_scheduler_resume_step", None)
+        self.allow_weight_only_resume = bool(cfg.get("allow_weight_only_resume", False))
         self.mixed_precision = str(cfg.mixed_precision).strip().lower()
         if self.mixed_precision not in {"no", "fp16", "bf16"}:
             raise ValueError(
@@ -56,11 +66,17 @@ class Wan22Trainer:
                 "Expected one of: ['no', 'fp16', 'bf16']."
             )
         self.wandb_enabled = bool(cfg.wandb.enabled)
+        self.log_action_abs6_metrics = self._should_log_action_abs6_metrics()
 
+        process_group_timeout_sec = int(os.environ.get("FASTWAM_PROCESS_GROUP_TIMEOUT_SEC", "1800"))
+        init_process_group_kwargs = InitProcessGroupKwargs(
+            timeout=timedelta(seconds=process_group_timeout_sec)
+        )
         self.accelerator = Accelerator(
             gradient_accumulation_steps=self.gradient_accumulation_steps,
             mixed_precision=self.mixed_precision,
             step_scheduler_with_optimizer=False,
+            kwargs_handlers=[init_process_group_kwargs],
         )
         
         logger.info(
@@ -75,10 +91,13 @@ class Wan22Trainer:
             self.max_grad_norm,
         )
         logger.info("using accelerator.device=%s", self.accelerator.device)
+        logger.info("log_action_abs6_metrics=%s", self.log_action_abs6_metrics)
         worker_init_fn = set_global_seed(self.seed, get_worker_init_fn=True)
         self._assert_dataset_length_consistent(self.train_dataset, "train_dataset")
         if self.val_dataset is not None:
             self._assert_dataset_length_consistent(self.val_dataset, "val_dataset")
+        if self.aux_video_dataset is not None:
+            self._assert_dataset_length_consistent(self.aux_video_dataset, "aux_video_dataset")
 
         # Freeze non-trainable modules before optimizer/deepspeed initialization.
         # This keeps DiT (+ optional proprio encoder) as trainable when ZeRO builds optimizer state.
@@ -94,14 +113,36 @@ class Wan22Trainer:
             betas=(0.9, 0.95),
         )
         
-        self.train_loader = self._build_loader(self.train_dataset, worker_init_fn=worker_init_fn)
+        self.train_sampler, self.train_loader = self._build_loader(
+            self.train_dataset,
+            worker_init_fn=worker_init_fn,
+        )
+        if self.aux_video_dataset is not None:
+            self.aux_video_sampler, self.aux_video_loader = self._build_loader(
+                self.aux_video_dataset,
+                worker_init_fn=worker_init_fn,
+                seed_offset=7919,
+            )
+        else:
+            self.aux_video_sampler = None
+            self.aux_video_loader = None
         total_train_steps = self._estimate_total_train_steps()
         self.max_steps = total_train_steps
-        warmup_steps = int(total_train_steps * 0.05)
+        scheduler_total_steps = cfg.get("lr_scheduler_total_steps", None)
+        self.lr_scheduler_total_steps = (
+            int(scheduler_total_steps) if scheduler_total_steps is not None else total_train_steps
+        )
+        warmup_steps = int(self.lr_scheduler_total_steps * 0.05)
         self.scheduler = self._build_scheduler(
             scheduler_type=cfg.lr_scheduler_type,
-            total_train_steps=total_train_steps,
+            total_train_steps=self.lr_scheduler_total_steps,
             warmup_steps=warmup_steps,
+        )
+        logger.info(
+            "LR scheduler configured with total_steps=%d warmup_steps=%d train_max_steps=%d",
+            self.lr_scheduler_total_steps,
+            warmup_steps,
+            self.max_steps,
         )
         self.global_step = 0
         self.epoch = 0
@@ -118,9 +159,24 @@ class Wan22Trainer:
         ensure_dir(self.state_dir)
         ensure_dir(self.eval_dir)
 
-        self.model, self.optimizer, self.train_loader, self.scheduler = self.accelerator.prepare(
-            self.model, self.optimizer, self.train_loader, self.scheduler
-        )
+        if self.aux_video_loader is None:
+            self.model, self.optimizer, self.train_loader, self.scheduler = self.accelerator.prepare(
+                self.model, self.optimizer, self.train_loader, self.scheduler
+            )
+        else:
+            (
+                self.model,
+                self.optimizer,
+                self.train_loader,
+                self.aux_video_loader,
+                self.scheduler,
+            ) = self.accelerator.prepare(
+                self.model,
+                self.optimizer,
+                self.train_loader,
+                self.aux_video_loader,
+                self.scheduler,
+            )
         self.optimizer.zero_grad(set_to_none=True)
         self.wandb_run = None
         self._init_wandb()
@@ -128,6 +184,13 @@ class Wan22Trainer:
 
         val_size = len(self.val_dataset) if self.val_dataset is not None else len(self.train_dataset)
         logger.info("Train/val dataset size: %d/%d", len(self.train_dataset), val_size)
+        if self.aux_video_dataset is not None:
+            logger.info(
+                "Aux video dataset size: %d loss_weight=%.4f action_loss_weight=%.4f",
+                len(self.aux_video_dataset),
+                self.aux_video_loss_weight,
+                self.aux_video_action_loss_weight,
+            )
 
     def _init_wandb(self):
         if not self.wandb_enabled or not self.accelerator.is_main_process:
@@ -165,31 +228,43 @@ class Wan22Trainer:
         self.wandb_run.finish()
         self.wandb_run = None
 
-    def _build_loader(self, dataset, worker_init_fn=None):
-        self.train_sampler = ResumableEpochSampler(
+    def _build_loader(self, dataset, worker_init_fn=None, seed_offset: int = 0):
+        sampler = ResumableEpochSampler(
             dataset=dataset,
-            seed=self.seed,
+            seed=self.seed + int(seed_offset),
             batch_size=self.batch_size,
             num_processes=self.accelerator.num_processes,
         )
-        return DataLoader(
+        loader = DataLoader(
             dataset,
             batch_size=self.batch_size,
             shuffle=False,
-            sampler=self.train_sampler,
+            sampler=sampler,
             num_workers=self.num_workers,
             pin_memory=torch.cuda.is_available(),
             worker_init_fn=worker_init_fn,
         )
+        return sampler, loader
 
     def _assert_dataset_length_consistent(self, dataset, dataset_name: str):
         if not hasattr(dataset, "__len__"):
             raise TypeError(f"`{dataset_name}` must implement __len__ for rank consistency checks.")
 
         local_length = len(dataset)
-        gathered_lengths = self.accelerator.gather(
-            torch.tensor([local_length], device=self.accelerator.device, dtype=torch.int64)
-        ).reshape(-1)
+        try:
+            gathered_lengths = self.accelerator.gather(
+                torch.tensor([local_length], device=self.accelerator.device, dtype=torch.int64)
+            ).reshape(-1)
+        except RuntimeError as exc:
+            if "no support for _allgather_base in MPI process group" in str(exc):
+                logger.warning(
+                    "Skipping %s length consistency check because the active process group "
+                    "does not support accelerator.gather: %s",
+                    dataset_name,
+                    exc,
+                )
+                return
+            raise
         if torch.all(gathered_lengths == gathered_lengths[0]):
             return
 
@@ -201,6 +276,34 @@ class Wan22Trainer:
         raise RuntimeError(
             f"{dataset_name} length mismatch across ranks: {gathered_lengths.cpu().tolist()}"
         )
+
+    def _should_log_action_abs6_metrics(self) -> bool:
+        explicit = self.cfg.get("eval_action_abs6_metrics", None)
+        if explicit is not None:
+            return bool(explicit)
+
+        def flatten_strings(value):
+            if value is None:
+                return []
+            if isinstance(value, DictConfig):
+                value = OmegaConf.to_container(value, resolve=False)
+            if isinstance(value, dict):
+                strings = []
+                for key, item in value.items():
+                    strings.extend(flatten_strings(key))
+                    strings.extend(flatten_strings(item))
+                return strings
+            if isinstance(value, (list, tuple, set)):
+                strings = []
+                for item in value:
+                    strings.extend(flatten_strings(item))
+                return strings
+            return [str(value)]
+
+        cfg_text = " ".join(flatten_strings(self.cfg)).lower()
+        if "robodojo" in cfg_text:
+            return False
+        return "abs6" in cfg_text or "robotwin" in cfg_text
 
     def _estimate_total_train_steps(self) -> int:
         if self.max_steps is not None:
@@ -263,6 +366,53 @@ class Wan22Trainer:
         eta_m, eta_s = divmod(eta_rem, 60)
         return f"{eta_h:02d}:{eta_m:02d}:{eta_s:02d}", steps_per_sec
 
+    def _advance_scheduler_to_step(self, scheduler_step: int):
+        scheduler_step = max(int(scheduler_step), 0)
+        if scheduler_step <= 0:
+            return
+        # Step from the freshly-created scheduler so SequentialLR warmup/cosine
+        # internals land at the same LR as a real run at this logical step.
+        for _ in range(scheduler_step):
+            self.scheduler.step()
+        logger.info(
+            "LR scheduler positioned at logical step=%d last_epoch=%s lr=%.6e",
+            scheduler_step,
+            getattr(self.scheduler, "last_epoch", None),
+            float(self.optimizer.param_groups[0]["lr"]),
+        )
+
+    def _reposition_restored_scheduler(self, scheduler_step: int):
+        """Rewind a scheduler restored by Accelerate without touching Adam state."""
+        scheduler_step = max(int(scheduler_step), 0)
+        native_scheduler = getattr(self.scheduler, "scheduler", self.scheduler)
+        scheduler_optimizer = getattr(native_scheduler, "optimizer", None)
+        if scheduler_optimizer is None:
+            raise TypeError("The restored scheduler does not expose its optimizer.")
+
+        for group in scheduler_optimizer.param_groups:
+            if "initial_lr" not in group:
+                raise KeyError("Cannot rewind restored scheduler: optimizer group lacks initial_lr.")
+            group["lr"] = float(group["initial_lr"])
+
+        original_optimizer = self.optimizer
+        self.optimizer = scheduler_optimizer
+        try:
+            reset_scheduler = self._build_scheduler(
+                scheduler_type=self.cfg.lr_scheduler_type,
+                total_train_steps=self.lr_scheduler_total_steps,
+                warmup_steps=int(self.lr_scheduler_total_steps * 0.05),
+            )
+            for _ in range(scheduler_step):
+                reset_scheduler.step()
+        finally:
+            self.optimizer = original_optimizer
+
+        native_scheduler.load_state_dict(reset_scheduler.state_dict())
+        logger.info(
+            "Restored optimizer state and repositioned scheduler at logical step=%d lr=%.6e",
+            scheduler_step,
+            float(scheduler_optimizer.param_groups[0]["lr"]),
+        )
     def _resume_or_load_checkpoint(self):
         resume = self.resume
         if not resume:
@@ -271,12 +421,57 @@ class Wan22Trainer:
         if resume_path.is_dir():
             logger.info("Resuming full training state from directory: %s", resume)
             self.load_training_state(str(resume_path))
+            if self.lr_scheduler_resume_step is not None:
+                self._reposition_restored_scheduler(int(self.lr_scheduler_resume_step))
+            logger.warning(
+                "Loaded full training state at train_step=%d; model and optimizer state were restored.",
+                self.global_step,
+            )
             return
         if not resume_path.exists():
             raise FileNotFoundError(f"Resume checkpoint not found: {resume}")
+        promoted_state_dir = self._matching_state_dir_for_weight_checkpoint(resume_path)
+        if promoted_state_dir is not None and not self.allow_weight_only_resume:
+            logger.warning(
+                "Resume path points to a weight-only checkpoint with a matching full state. "
+                "Promoting %s -> %s so optimizer/scheduler/model state are restored. "
+                "Set allow_weight_only_resume=true only for intentional model-weight transfer.",
+                resume_path,
+                promoted_state_dir,
+            )
+            self.load_training_state(str(promoted_state_dir))
+            if self.lr_scheduler_resume_step is not None:
+                self._reposition_restored_scheduler(int(self.lr_scheduler_resume_step))
+            logger.warning(
+                "Loaded promoted full training state at train_step=%d; model and optimizer state were restored.",
+                self.global_step,
+            )
+            return
         logger.info("Loading weight checkpoint only: %s", resume)
-        self.accelerator.unwrap_model(self.model).load_checkpoint(str(resume_path), optimizer=None)
-        logger.warning("Loaded .pt weights only; optimizer/scheduler/step were not restored under ZeRO2.")
+        payload = self.accelerator.unwrap_model(self.model).load_checkpoint(str(resume_path), optimizer=None)
+        loaded_step = payload.get("step") if isinstance(payload, dict) else None
+        if loaded_step is None:
+            match = re.search(r"step[_-](\d+)", resume_path.stem)
+            loaded_step = int(match.group(1)) if match else 0
+        loaded_step = int(loaded_step)
+        self.global_step = 0 if self.reset_step_on_weight_load else loaded_step
+        scheduler_step = self.global_step
+        if self.lr_scheduler_resume_step is not None:
+            scheduler_step = int(self.lr_scheduler_resume_step)
+        self._advance_scheduler_to_step(scheduler_step)
+        logger.warning(
+            "Loaded .pt weights only at checkpoint_step=%d train_step=%d scheduler_step=%d; optimizer state was not restored.",
+            loaded_step,
+            self.global_step,
+            scheduler_step,
+        )
+
+    @staticmethod
+    def _matching_state_dir_for_weight_checkpoint(resume_path: Path):
+        if resume_path.parent.name != "weights":
+            return None
+        state_dir = resume_path.parent.parent / "state" / resume_path.stem
+        return state_dir if state_dir.is_dir() else None
 
     def _set_dit_only_train_mode(self):
         # Match DiffSynth's freeze_except("dit"): only DiT stays trainable/in-train-mode.
@@ -303,8 +498,11 @@ class Wan22Trainer:
         proprio = sample.get("proprio", None)
         context = sample.get("context", None)
         context_mask = sample.get("context_mask", None)
+        episode_video = sample.get("episode_video", None)
         tree_video = sample.get("tree_video", None)
         tree_image_is_pad = sample.get("tree_image_is_pad", None)
+        action_adapter = sample.get("action_adapter", None)
+        action_dim_is_pad = sample.get("action_dim_is_pad", None)
 
         if not isinstance(video, torch.Tensor):
             raise TypeError(
@@ -384,12 +582,27 @@ class Wan22Trainer:
             "context": context,
             "context_mask": context_mask,
             "action_horizon": action_horizon,
+            "action_adapter": action_adapter,
+            "action_dim_is_pad": action_dim_is_pad,
         }
+        if "hdr_mode" in sample:
+            batched["hdr_mode"] = sample["hdr_mode"]
         if "action_video_transition_count" in sample:
             batched["action_video_transition_count"] = torch.as_tensor(
                 sample["action_video_transition_count"],
                 dtype=torch.long,
             ).reshape(1)
+        if episode_video is not None:
+            if not isinstance(episode_video, torch.Tensor):
+                raise TypeError(f"`sample['episode_video']` must be a torch.Tensor, got {type(episode_video)}")
+            if episode_video.ndim == 4:
+                episode_video = episode_video.unsqueeze(0)
+            if episode_video.ndim != 5:
+                raise ValueError(
+                    "`sample['episode_video']` must be [3,T,H,W] or [B,3,T,H,W], "
+                    f"got {tuple(episode_video.shape)}"
+                )
+            batched["episode_video"] = episode_video
         if tree_video is not None:
             if not isinstance(tree_video, torch.Tensor):
                 raise TypeError(f"`sample['tree_video']` must be a torch.Tensor, got {type(tree_video)}")
@@ -415,6 +628,22 @@ class Wan22Trainer:
             batched["tree_image_is_pad"] = tree_image_is_pad
         return batched
 
+    def _get_eval_sample(self, eval_index: int):
+        sample = self.val_dataset[eval_index]
+        if "video" in sample:
+            return sample
+
+        # Cached training samples intentionally carry latents instead of RGB.
+        # Eval video metrics still need the full RGB clip, including HDR tail
+        # frames, so temporarily bypass the latent cache for this index.
+        if hasattr(self.val_dataset, "_get"):
+            return self.val_dataset._get(eval_index)
+
+        raise KeyError(
+            "Eval sample has no `video` field and the dataset does not expose "
+            "`_get()` for uncached RGB loading."
+        )
+
     @torch.no_grad()
     def evaluate(self):
         if self.val_dataset is None:
@@ -427,7 +656,7 @@ class Wan22Trainer:
         # eval_index = (self.global_step + self.accelerator.process_index) % len(self.val_dataset)
         rng = torch.Generator(device="cpu").manual_seed(self.global_step + self.accelerator.process_index)
         eval_index = torch.randint(0, len(self.val_dataset), (1,), generator=rng).item()
-        sample = self._to_batched_eval_sample(self.val_dataset[eval_index])
+        sample = self._to_batched_eval_sample(self._get_eval_sample(eval_index))
 
         # 1. training loss
         with self.accelerator.autocast():
@@ -453,13 +682,19 @@ class Wan22Trainer:
             "num_inference_steps": self.eval_num_inference_steps,
             "seed": 42,
             "tiled": False,
+            "action_adapter": sample.get("action_adapter"),
         }
+        if sample.get("hdr_mode") in {"episode_first_hdr", "episode_back_mixed", "episode_first_special_latent"} and "episode_video" in sample:
+            infer_kwargs["episode_image"] = sample["episode_video"][0]
         if sample["context"] is not None:
             infer_kwargs["prompt"] = None
             infer_kwargs["context"] = sample["context"][0]
             infer_kwargs["context_mask"] = sample["context_mask"][0]
         else:
             infer_kwargs["prompt"] = prompt
+
+        if "episode_image" in infer_kwargs and "episode_image" not in inspect.signature(model.infer).parameters:
+            infer_kwargs.pop("episode_image")
 
         pred = model.infer(
             **infer_kwargs,
@@ -482,49 +717,59 @@ class Wan22Trainer:
 
         action_l1 = None
         action_l2 = None
+        action_abs6_l1 = None
+        action_abs6_l2 = None
         if action is not None and pred_action is not None:
             if sample["proprio"] is None:
                 raise ValueError("Eval sample must contain `proprio` for action denormalization.")
             proprio = sample["proprio"].detach().to(device="cpu", dtype=torch.float32)
             
-            processor = self.val_dataset.lerobot_dataset.processor
+            processor = getattr(getattr(self.val_dataset, "lerobot_dataset", None), "processor", None)
 
-            denorm_actions = {}
-            action_meta = processor.shape_meta["action"]
-            state_meta = processor.shape_meta["state"]
-            for action_name, raw_action in (("pred", pred_action), ("gt", action)):
-                if not isinstance(raw_action, torch.Tensor):
-                    raise TypeError(f"{action_name} action must be a torch.Tensor, got {type(raw_action)}")
-                if raw_action.ndim == 2:
-                    action_btd = raw_action.unsqueeze(0)
-                elif raw_action.ndim == 3 and raw_action.shape[0] == 1:
-                    action_btd = raw_action
-                else:
-                    raise ValueError(
-                        f"{action_name} action must have shape [T, D] or [1, T, D], got {tuple(raw_action.shape)}"
-                    )
-                action_btd = action_btd.detach().to(device="cpu", dtype=torch.float32)
+            if processor is None:
+                pred_action_denorm = pred_action.detach().to(device="cpu", dtype=torch.float32)
+                gt_action_denorm = action.detach().to(device="cpu", dtype=torch.float32)
+                if pred_action_denorm.ndim == 2:
+                    pred_action_denorm = pred_action_denorm.unsqueeze(0)
+                if gt_action_denorm.ndim == 2:
+                    gt_action_denorm = gt_action_denorm.unsqueeze(0)
+            else:
+                denorm_actions = {}
+                action_meta = processor.shape_meta["action"]
+                state_meta = processor.shape_meta["state"]
+                for action_name, raw_action in (("pred", pred_action), ("gt", action)):
+                    if not isinstance(raw_action, torch.Tensor):
+                        raise TypeError(f"{action_name} action must be a torch.Tensor, got {type(raw_action)}")
+                    if raw_action.ndim == 2:
+                        action_btd = raw_action.unsqueeze(0)
+                    elif raw_action.ndim == 3 and raw_action.shape[0] == 1:
+                        action_btd = raw_action
+                    else:
+                        raise ValueError(
+                            f"{action_name} action must have shape [T, D] or [1, T, D], got {tuple(raw_action.shape)}"
+                        )
+                    action_btd = action_btd.detach().to(device="cpu", dtype=torch.float32)
 
-                batch = {
-                    "action": action_btd,
-                    "state": proprio,
-                }
-                batch = processor.action_state_merger.backward(batch)
-                batch = processor.normalizer.backward(batch)
-                merged_batch = {
-                    "action": {meta["key"]: batch["action"][meta["key"]].squeeze(0) for meta in action_meta},
-                    "state": {meta["key"]: batch["state"][meta["key"]].squeeze(0) for meta in state_meta},
-                }
-                merged_batch = processor.action_state_merger.forward(merged_batch)
-                denorm_action = merged_batch["action"].unsqueeze(0)
-                if denorm_action.ndim != 3 or denorm_action.shape[0] != 1:
-                    raise ValueError(
-                        f"Denormalized {action_name} action must have shape [1, T, D], got {tuple(denorm_action.shape)}"
-                    )
-                denorm_actions[action_name] = denorm_action
+                    batch = {
+                        "action": action_btd,
+                        "state": proprio,
+                    }
+                    batch = processor.action_state_merger.backward(batch)
+                    batch = processor.normalizer.backward(batch)
+                    merged_batch = {
+                        "action": {meta["key"]: batch["action"][meta["key"]].squeeze(0) for meta in action_meta},
+                        "state": {meta["key"]: batch["state"][meta["key"]].squeeze(0) for meta in state_meta},
+                    }
+                    merged_batch = processor.action_state_merger.forward(merged_batch)
+                    denorm_action = merged_batch["action"].unsqueeze(0)
+                    if denorm_action.ndim != 3 or denorm_action.shape[0] != 1:
+                        raise ValueError(
+                            f"Denormalized {action_name} action must have shape [1, T, D], got {tuple(denorm_action.shape)}"
+                        )
+                    denorm_actions[action_name] = denorm_action
 
-            pred_action_denorm = denorm_actions["pred"]
-            gt_action_denorm = denorm_actions["gt"]
+                pred_action_denorm = denorm_actions["pred"]
+                gt_action_denorm = denorm_actions["gt"]
 
             if pred_action_denorm.shape != gt_action_denorm.shape:
                 raise ValueError(
@@ -532,8 +777,20 @@ class Wan22Trainer:
                     f"pred={tuple(pred_action_denorm.shape)} vs gt={tuple(gt_action_denorm.shape)}"
                 )
             action_diff = pred_action_denorm - gt_action_denorm
-            action_l1 = action_diff.abs().mean().item()
-            action_l2 = action_diff.pow(2).mean().item()
+            if sample.get("action_dim_is_pad") is not None:
+                dim_mask = torch.as_tensor(sample["action_dim_is_pad"], dtype=torch.bool).reshape(-1)
+                if dim_mask.numel() == action_diff.shape[-1]:
+                    action_diff = action_diff[..., ~dim_mask]
+            if action_diff.shape[-1] >= 13 and self.log_action_abs6_metrics:
+                action7_diff = action_diff[..., :7]
+                action_abs6_diff = action_diff[..., 7:13]
+                action_l1 = action7_diff.abs().mean().item()
+                action_l2 = action7_diff.pow(2).mean().item()
+                action_abs6_l1 = action_abs6_diff.abs().mean().item()
+                action_abs6_l2 = action_abs6_diff.pow(2).mean().item()
+            else:
+                action_l1 = action_diff.abs().mean().item()
+                action_l2 = action_diff.pow(2).mean().item()
 
         # 4. VAE reconstruction metrics against GT video
         gt_video_batch = video0.unsqueeze(0).to(device=model.device, dtype=model.torch_dtype)
@@ -552,6 +809,24 @@ class Wan22Trainer:
         psnr_rollout_vs_decode = video_psnr(pred=pred_video_tensor, target=vae_video_tensor)
         ssim_rollout_vs_decode = video_ssim(pred=pred_video_tensor, target=vae_video_tensor)
 
+        episode_psnr_rollout_vs_gt = None
+        episode_ssim_rollout_vs_gt = None
+        episode_stitched_frames = None
+        if "episode_video" in sample and "episode_video" in pred:
+            pred_episode_tensor = pil_frames_to_video_tensor(pred["episode_video"])
+            gt_episode_tensor = ((sample["episode_video"][0].detach().float().cpu().clamp(-1.0, 1.0) + 1.0) * 0.5).contiguous()
+            if pred_episode_tensor.shape == gt_episode_tensor.shape:
+                episode_psnr_rollout_vs_gt = video_psnr(pred=pred_episode_tensor, target=gt_episode_tensor)
+                episode_ssim_rollout_vs_gt = video_ssim(pred=pred_episode_tensor, target=gt_episode_tensor)
+                episode_stitched_tensor = torch.cat(
+                    [pred_episode_tensor, gt_episode_tensor],
+                    dim=2,
+                ).contiguous()
+                episode_stitched_frames = []
+                for t in range(episode_stitched_tensor.shape[1]):
+                    frame = (episode_stitched_tensor[:, t].permute(1, 2, 0).clamp(0.0, 1.0).numpy() * 255.0).astype(np.uint8)
+                    episode_stitched_frames.append(Image.fromarray(frame))
+
         stitched_video_tensor = torch.cat(
             [pred_video_tensor, vae_video_tensor, gt_video_tensor],
             dim=2,
@@ -566,6 +841,12 @@ class Wan22Trainer:
             f"step_{self.global_step:06d}_rank_{self.accelerator.process_index:03d}.mp4",
         )
         save_mp4(stitched_frames, video_path, fps=8)
+        if episode_stitched_frames is not None:
+            episode_video_path = os.path.join(
+                self.eval_dir,
+                f"step_{self.global_step:06d}_rank_{self.accelerator.process_index:03d}_episode.mp4",
+            )
+            save_mp4(episode_stitched_frames, episode_video_path, fps=8)
 
         local_metrics = torch.tensor(
             [
@@ -578,6 +859,8 @@ class Wan22Trainer:
                 float(ssim_decode_vs_gt),
                 float(action_l2) if action_l2 is not None else -1.0,
                 float(action_l1) if action_l1 is not None else -1.0,
+                float(action_abs6_l2) if action_abs6_l2 is not None else -1.0,
+                float(action_abs6_l1) if action_abs6_l1 is not None else -1.0,
             ],
             device=self.accelerator.device,
             dtype=torch.float32,
@@ -586,6 +869,8 @@ class Wan22Trainer:
         mean_metrics = gathered_metrics[:, :7].mean(dim=0)
         action_l2_mean = gathered_metrics[:, 7].mean().item() if action_l2 is not None else None
         action_l1_mean = gathered_metrics[:, 8].mean().item() if action_l1 is not None else None
+        action_abs6_l2_mean = gathered_metrics[:, 9].mean().item() if action_abs6_l2 is not None else None
+        action_abs6_l1_mean = gathered_metrics[:, 10].mean().item() if action_abs6_l1 is not None else None
 
         if was_dit_training:
             self._set_dit_only_train_mode()
@@ -604,6 +889,14 @@ class Wan22Trainer:
             result["action_l2"] = float(action_l2_mean)
         if action_l1_mean is not None:
             result["action_l1"] = float(action_l1_mean)
+        if action_abs6_l2_mean is not None:
+            result["action_abs6_l2"] = float(action_abs6_l2_mean)
+        if action_abs6_l1_mean is not None:
+            result["action_abs6_l1"] = float(action_abs6_l1_mean)
+        if episode_psnr_rollout_vs_gt is not None:
+            result["episode_psnr_rg"] = float(episode_psnr_rollout_vs_gt)
+        if episode_ssim_rollout_vs_gt is not None:
+            result["episode_ssim_rg"] = float(episode_ssim_rollout_vs_gt)
         return result
 
     def _save_weights_checkpoint(self, step_tag: str):
@@ -695,6 +988,7 @@ class Wan22Trainer:
 
         logger.info("Starting training with max_steps=%d.", self.max_steps)
         data_iter = iter(self.train_loader)
+        aux_video_iter = iter(self.aux_video_loader) if self.aux_video_loader is not None else None
         self.run_start_step = self.global_step
         self.run_start_time = time.perf_counter()
 
@@ -703,6 +997,16 @@ class Wan22Trainer:
                 sample = next(data_iter)
                 self.batch_in_epoch += 1
             except StopIteration:
+                if self.save_every_is_epoch and self.global_step > self.run_start_step:
+                    ckpt_info = self.save_checkpoint()
+                    if self.accelerator.is_main_process:
+                        logger.info(
+                            "[ckpt] epoch=%d step=%d weights=%s state=%s",
+                            self.epoch + 1,
+                            self.global_step,
+                            ckpt_info["weights_path"],
+                            ckpt_info["state_path"],
+                        )
                 self.epoch += 1
                 self.batch_in_epoch = 0
                 self.train_sampler.clear_resume_batch_offset()
@@ -711,10 +1015,36 @@ class Wan22Trainer:
 
             with self.accelerator.accumulate(self.model):
                 train_model = self.model if hasattr(self.model, "training_loss") else self.accelerator.unwrap_model(self.model)
+                model_for_attrs = self.accelerator.unwrap_model(self.model)
 
                 with self.accelerator.autocast():
-                    loss, loss_dict = train_model.training_loss(sample)
+                    real_loss, real_loss_dict = train_model.training_loss(sample)
+                    loss = real_loss
+                    loss_dict = {f"real/{key}": value for key, value in real_loss_dict.items()}
                 self.accelerator.backward(loss)
+
+                aux_loss = None
+                if aux_video_iter is not None:
+                    try:
+                        aux_sample = next(aux_video_iter)
+                    except StopIteration:
+                        aux_video_iter = iter(self.aux_video_loader)
+                        aux_sample = next(aux_video_iter)
+
+                    old_action_weight = getattr(model_for_attrs, "loss_lambda_action", None)
+                    if old_action_weight is not None:
+                        model_for_attrs.loss_lambda_action = self.aux_video_action_loss_weight
+                    try:
+                        with self.accelerator.autocast():
+                            aux_loss, aux_loss_dict = train_model.training_loss(aux_sample)
+                            aux_loss = aux_loss * self.aux_video_loss_weight
+                            loss = loss + aux_loss
+                            for key, value in aux_loss_dict.items():
+                                loss_dict[f"aux/{key}"] = value
+                    finally:
+                        if old_action_weight is not None:
+                            model_for_attrs.loss_lambda_action = old_action_weight
+                    self.accelerator.backward(aux_loss)
 
                 if self.accelerator.sync_gradients:
                     grad_norm = self.accelerator.clip_grad_norm_(self.model.parameters(), self.max_grad_norm)
@@ -791,6 +1121,12 @@ class Wan22Trainer:
                                 description += " action_l2=%.4f" % metrics["action_l2"]
                             if "action_l1" in metrics:
                                 description += " action_l1=%.4f" % metrics["action_l1"]
+                            if "action_abs6_l2" in metrics:
+                                description += " action_abs6_l2=%.4f" % metrics["action_abs6_l2"]
+                            if "action_abs6_l1" in metrics:
+                                description += " action_abs6_l1=%.4f" % metrics["action_abs6_l1"]
+                            if "episode_psnr_rg" in metrics:
+                                description += " episode_psnr_rg=%.4f" % metrics["episode_psnr_rg"]
                             logger.info(description)
                             eval_payload = {
                                 "eval/val_loss": float(metrics["val_loss"]),
@@ -801,10 +1137,18 @@ class Wan22Trainer:
                                 "eval/psnr_dg": float(metrics["psnr_dg"]),
                                 "eval/ssim_dg": float(metrics["ssim_dg"]),
                             }
+                            if "action_abs6_l2" in metrics:
+                                eval_payload["eval/action_abs6_l2"] = float(metrics["action_abs6_l2"])
+                            if "action_abs6_l1" in metrics:
+                                eval_payload["eval/action_abs6_l1"] = float(metrics["action_abs6_l1"])
                             if "action_l2" in metrics:
                                 eval_payload["eval/action_l2"] = float(metrics["action_l2"])
                             if "action_l1" in metrics:
                                 eval_payload["eval/action_l1"] = float(metrics["action_l1"])
+                            if "episode_psnr_rg" in metrics:
+                                eval_payload["eval/episode_psnr_rg"] = float(metrics["episode_psnr_rg"])
+                            if "episode_ssim_rg" in metrics:
+                                eval_payload["eval/episode_ssim_rg"] = float(metrics["episode_ssim_rg"])
                             self._wandb_log(eval_payload)
 
                     if self.save_every > 0 and self.global_step % self.save_every == 0:

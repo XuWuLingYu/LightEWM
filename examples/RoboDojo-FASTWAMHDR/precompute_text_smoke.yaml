@@ -1,0 +1,25 @@
+task: precompute_text
+
+runner:
+  class_path: lightewm.runner.fastwam.FastWAMRunner
+  params:
+    fastwam_root: lightewm/vendor/fastwam
+    output_path: ./logs/precompute/RoboDojo-FASTWAMHDR-smoke
+    num_processes: 16
+
+    fastwam_task: robotwin_uncond_3cam_384_1e-4
+    fastwam_model: fastwam_joint
+    fastwam_data: robotwin
+    model_id: Wan-AI/Wan2.2-TI2V-5B
+    tokenizer_model_id: Wan-AI/Wan2.1-T2V-1.3B
+
+    dataset_dirs:
+      - data/robodojo_fastwam/robodojo-v21-video-smoke-10task-10ep/lerobot
+    text_embedding_cache_dir: data/text_embeds_cache/robodojo_fastwam/smoke_10task_10ep
+
+    hydra_overrides:
+      - model.redirect_common_files=false
+      - model.action_attend_video=local_clean_first
+      - data.val.dataset_dirs=[../../../data/robodojo_fastwam/robodojo-v21-video-smoke-10task-10ep/lerobot]
+      - data.val.text_embedding_cache_dir=../../../data/text_embeds_cache/robodojo_fastwam/smoke_10task_10ep
+      - +overwrite=false

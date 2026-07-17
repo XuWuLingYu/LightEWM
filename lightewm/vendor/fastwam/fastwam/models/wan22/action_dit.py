@@ -1,7 +1,7 @@
 import os
 import torch
 import torch.nn as nn
-from typing import Any, Dict, Optional
+from typing import Any, Dict, Optional, Sequence
 
 from fastwam.utils.logging_config import get_logger
 
@@ -30,7 +30,7 @@ class ActionHead(nn.Module):
 
 
 class ActionDiT(nn.Module):
-    ACTION_BACKBONE_SKIP_PREFIXES = ("action_encoder.", "head.")
+    ACTION_BACKBONE_SKIP_PREFIXES = ("action_encoder.", "head.", "action_adapters.", "action_heads.")
     ACTION_BACKBONE_META_KEYS = (
         "hidden_dim",
         "ffn_dim",
@@ -54,6 +54,8 @@ class ActionDiT(nn.Module):
         attn_head_dim: int,
         num_layers: int,
         use_gradient_checkpointing: bool = False,
+        action_adapter_dims: Optional[Dict[str, int]] = None,
+        default_action_adapter: str = "default",
     ):
         super().__init__()
         self.hidden_dim = hidden_dim
@@ -71,7 +73,26 @@ class ActionDiT(nn.Module):
         if attn_head_dim % 2 != 0:
             raise ValueError(f"`attn_head_dim` must be even for RoPE, got {attn_head_dim}")
 
+        self.default_action_adapter = str(default_action_adapter)
+        self.action_adapter_dims = None
+        if action_adapter_dims is not None:
+            self.action_adapter_dims = {str(name): int(dim) for name, dim in dict(action_adapter_dims).items()}
+            if not self.action_adapter_dims:
+                raise ValueError("`action_adapter_dims` must be non-empty when provided.")
+            if self.default_action_adapter not in self.action_adapter_dims:
+                raise ValueError(
+                    f"default_action_adapter={self.default_action_adapter!r} is not in action_adapter_dims "
+                    f"{sorted(self.action_adapter_dims)}"
+                )
+            for name, dim in self.action_adapter_dims.items():
+                if dim <= 0 or dim > action_dim:
+                    raise ValueError(f"Invalid action adapter dim for {name!r}: {dim}; action_dim={action_dim}")
+
         self.action_encoder = nn.Linear(action_dim, hidden_dim)
+        self.action_adapters = nn.ModuleDict()
+        if self.action_adapter_dims is not None:
+            for name, dim in self.action_adapter_dims.items():
+                self.action_adapters[name] = nn.Linear(dim, hidden_dim)
         self.text_embedding = nn.Sequential(
             nn.Linear(text_dim, hidden_dim),
             nn.GELU(approximate="tanh"),
@@ -96,6 +117,10 @@ class ActionDiT(nn.Module):
             ]
         )
         self.head = nn.Linear(hidden_dim, action_dim)
+        self.action_heads = nn.ModuleDict()
+        if self.action_adapter_dims is not None:
+            for name, dim in self.action_adapter_dims.items():
+                self.action_heads[name] = nn.Linear(hidden_dim, dim)
         self.freqs = precompute_freqs_cis(attn_head_dim, end=1024)
 
         self.use_gradient_checkpointing = use_gradient_checkpointing
@@ -223,12 +248,55 @@ class ActionDiT(nn.Module):
         )
         return action_expert.to(device=device, dtype=torch_dtype)
 
+    def _normalize_action_adapters(self, action_adapter: Optional[str | Sequence[str]], batch_size: int) -> list[str]:
+        if self.action_adapter_dims is None:
+            return [self.default_action_adapter] * batch_size
+        if action_adapter is None:
+            return [self.default_action_adapter] * batch_size
+        if isinstance(action_adapter, str):
+            names = [action_adapter] * batch_size
+        elif isinstance(action_adapter, Sequence):
+            names = [str(item) for item in action_adapter]
+        else:
+            raise TypeError(f"Unsupported action_adapter type: {type(action_adapter)}")
+        if len(names) != batch_size:
+            raise ValueError(f"action_adapter length {len(names)} does not match batch_size {batch_size}")
+        unknown = sorted({name for name in names if name not in self.action_adapter_dims})
+        if unknown:
+            raise ValueError(f"Unknown action adapters {unknown}; expected {sorted(self.action_adapter_dims)}")
+        return names
+
+    def _encode_action_tokens(self, action_tokens: torch.Tensor, adapter_names: list[str]) -> torch.Tensor:
+        if self.action_adapter_dims is None:
+            return self.action_encoder(action_tokens)
+        tokens = action_tokens.new_zeros((action_tokens.shape[0], action_tokens.shape[1], self.hidden_dim))
+        for name in sorted(set(adapter_names)):
+            rows = [idx for idx, item in enumerate(adapter_names) if item == name]
+            dim = self.action_adapter_dims[name]
+            row_index = torch.as_tensor(rows, device=action_tokens.device, dtype=torch.long)
+            encoded = self.action_adapters[name](action_tokens.index_select(0, row_index)[..., :dim])
+            tokens.index_copy_(0, row_index, encoded)
+        return tokens
+
+    def _decode_action_tokens(self, tokens: torch.Tensor, adapter_names: list[str]) -> torch.Tensor:
+        if self.action_adapter_dims is None:
+            return self.head(tokens)
+        action = tokens.new_zeros((tokens.shape[0], tokens.shape[1], self.action_dim))
+        for name in sorted(set(adapter_names)):
+            rows = [idx for idx, item in enumerate(adapter_names) if item == name]
+            dim = self.action_adapter_dims[name]
+            row_index = torch.as_tensor(rows, device=tokens.device, dtype=torch.long)
+            decoded = self.action_heads[name](tokens.index_select(0, row_index))
+            action.index_copy_(0, row_index, torch.nn.functional.pad(decoded, (0, self.action_dim - dim)))
+        return action
+
     def pre_dit(
         self,
         action_tokens: torch.Tensor,
         timestep: torch.Tensor,
         context: torch.Tensor,
         context_mask: Optional[torch.Tensor] = None,
+        action_adapter: Optional[str | Sequence[str]] = None,
     ) -> Dict[str, Any]:
         if action_tokens.ndim != 3:
             raise ValueError(
@@ -280,7 +348,8 @@ class ActionDiT(nn.Module):
         t = self.time_embedding(sinusoidal_embedding_1d(self.freq_dim, timestep))
         t_mod = self.time_projection(t).unflatten(1, (6, self.hidden_dim))
 
-        tokens = self.action_encoder(action_tokens)
+        adapter_names = self._normalize_action_adapters(action_adapter, batch_size)
+        tokens = self._encode_action_tokens(action_tokens, adapter_names)
         context_emb = self.text_embedding(context)
         context_attn_mask = context_mask.unsqueeze(1).expand(-1, seq_len, -1)
         freqs = self.freqs[:seq_len].view(seq_len, 1, -1).to(tokens.device)
@@ -295,11 +364,13 @@ class ActionDiT(nn.Module):
             "meta": {
                 "batch_size": batch_size,
                 "seq_len": seq_len,
+                "action_adapter": adapter_names,
             },
         }
 
     def post_dit(self, tokens: torch.Tensor, pre_state: Dict[str, Any]) -> torch.Tensor:
-        return self.head(tokens)
+        adapter_names = pre_state.get("meta", {}).get("action_adapter")
+        return self._decode_action_tokens(tokens, adapter_names or [self.default_action_adapter] * int(tokens.shape[0]))
 
     def forward(
         self,
@@ -307,12 +378,14 @@ class ActionDiT(nn.Module):
         timestep: torch.Tensor,
         context: torch.Tensor,
         context_mask: Optional[torch.Tensor] = None,
+        action_adapter: Optional[str | Sequence[str]] = None,
     ) -> torch.Tensor:
         pre_state = self.pre_dit(
             action_tokens=action_tokens,
             timestep=timestep,
             context=context,
             context_mask=context_mask,
+            action_adapter=action_adapter,
         )
         x = pre_state["tokens"]
         context = pre_state["context"]

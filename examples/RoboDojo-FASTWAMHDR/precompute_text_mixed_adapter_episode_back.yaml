@@ -1,0 +1,27 @@
+task: precompute_text
+
+runner:
+  class_path: lightewm.runner.fastwam.FastWAMRunner
+  params:
+    fastwam_root: lightewm/vendor/fastwam
+    output_path: ./logs/precompute_text/MixedAdapter-FASTWAMHDR
+    run_name: mixed_adapter_episode_back_rdj_rw_droid_20260714
+    num_processes: 16
+
+    fastwam_task: robotwin_uncond_3cam_384_1e-4
+    fastwam_model: fastwam_joint_adapter
+    fastwam_data: mixed_adapter_cache
+
+    model_id: Wan-AI/Wan2.2-TI2V-5B
+    tokenizer_model_id: Wan-AI/Wan2.1-T2V-1.3B
+
+    hydra_overrides:
+      - model.redirect_common_files=false
+      - data.train.latent_cache_dir=../../../data/mixed_adapter_episode_back_rdj_rw_droid_20260714
+      - data.train.index_file=../../../data/mixed_adapter_episode_back_rdj_rw_droid_20260714/train_indices.pt
+      - data.train.text_embedding_cache_dir=../../../data/text_embeds_cache/mixed_adapter_episode_back_rdj_rw_droid_20260714
+      - data.train.dataset_dirs=[../../../data/mixed_adapter_episode_back_rdj_rw_droid_20260714/prompt_dataset]
+      - data.val.latent_cache_dir=../../../data/mixed_adapter_episode_back_rdj_rw_droid_20260714
+      - data.val.index_file=../../../data/mixed_adapter_episode_back_rdj_rw_droid_20260714/val_indices.pt
+      - data.val.text_embedding_cache_dir=../../../data/text_embeds_cache/mixed_adapter_episode_back_rdj_rw_droid_20260714
+      - data.val.dataset_dirs=[../../../data/mixed_adapter_episode_back_rdj_rw_droid_20260714/prompt_dataset]

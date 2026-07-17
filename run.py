@@ -191,7 +191,11 @@ def apply_output_convention(cfg: dict, config_name: str, run_id: str):
     if task == "train":
         runner_params["output_path"] = str(run_dir)
     elif task == "infer":
-        runner_params["output_dir"] = str(run_dir)
+        if not (
+            os.environ.get("LIGHTEWM_RESPECT_OUTPUT_DIR") == "1"
+            and runner_params.get("output_dir")
+        ):
+            runner_params["output_dir"] = str(run_dir)
     return run_dir
 
 

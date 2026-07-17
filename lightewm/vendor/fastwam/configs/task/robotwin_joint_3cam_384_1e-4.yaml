@@ -18,7 +18,7 @@ learning_rate: 1e-4
 num_epochs: 5
 max_steps: null
 log_every: 10
-save_every: 2500
+save_every: epoch
 eval_every: 500
 
 # training

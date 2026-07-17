@@ -20,3 +20,28 @@ wandb
 server_scripts/
 examples/Pretrain/
 .deepspeed_env
+examples/libero_to_realbot_fastwamhdr/
+
+# Local experiment path index
+docs/local_ckpt_index.md
+# realbot-HDR local experiment scripts/code
+examples/realbot-HDR/local/
+examples/realbot-HDR/**/local/
+# Local data, logs, checkpoints, and temporary artifacts
+/data/
+/logs/
+/checkpoints/
+/tmp/
+.cache/
+*.bak*
+*.log
+*.pt
+*.pth
+*.safetensors
+*.ckpt
+*.mp4
+*.npz
+*.npy
+*.png
+*.jpg
+*.jpeg

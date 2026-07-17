@@ -7,6 +7,7 @@ proprio_dim: ${data.train.processor.proprio_output_dim}
 redirect_common_files: true
 mot_checkpoint_mixed_attn: true
 action_attend_video: full
+hdr_mode: back_hdr
 action_dit_pretrained_path: checkpoints/ActionDiT_linear_interp_Wan22_alphascale_1024hdim.pt
 video_dit_pretrained_path: null
 skip_dit_load_from_pretrain: false
