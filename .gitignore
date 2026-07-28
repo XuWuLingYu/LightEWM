@@ -6,6 +6,10 @@ data/
 !lightewm/vendor/fastwam/configs/data/
 !lightewm/vendor/fastwam/configs/data/**
 logs/
+eval/
+evals/
+evaluation/
+evaluations/
 models/
 !lightewm/vendor/fastwam/fastwam/models/
 !lightewm/vendor/fastwam/fastwam/models/**
