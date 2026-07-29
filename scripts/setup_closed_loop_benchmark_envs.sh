@@ -10,6 +10,35 @@ export UV_DEFAULT_INDEX
 export UV_HTTP_TIMEOUT="${UV_HTTP_TIMEOUT:-600}"
 export UV_HTTP_RETRIES="${UV_HTTP_RETRIES:-10}"
 export GIT_LFS_SKIP_SMUDGE="${GIT_LFS_SKIP_SMUDGE:-1}"
+export CUDA_HOME="${LIGHTEWM_CUDA_HOME:-/usr/local/cuda}"
+export PATH="${CUDA_HOME}/bin:${PATH}"
+
+sanitize_library_path() {
+  local current="$1"
+  local rejected_prefix="$2"
+  local entry
+  local kept=()
+  local entries=()
+  IFS=: read -r -a entries <<< "${current}"
+  for entry in "${entries[@]}"; do
+    [[ -z "${entry}" || "${entry}" == "${rejected_prefix}"* ]] && continue
+    kept+=("${entry}")
+  done
+  local joined
+  joined="$(IFS=:; echo "${kept[*]}")"
+  printf '%s' "${joined}"
+}
+
+if [[ "${LIGHTEWM_ALLOW_PPU_CUDA:-0}" != 1 ]]; then
+  sanitized_ld_library_path="$(
+    sanitize_library_path "${LD_LIBRARY_PATH:-}" "/usr/local/PPU_SDK"
+  )"
+  if [[ -n "${sanitized_ld_library_path}" ]]; then
+    export LD_LIBRARY_PATH="${sanitized_ld_library_path}"
+  else
+    unset LD_LIBRARY_PATH
+  fi
+fi
 
 ROBOTWIN_ROOT="${ROOT}/repos/RoboTwin"
 ROBOLAB_ROOT="${ROOT}/repos/RoboLab"
@@ -64,7 +93,8 @@ install_robotwin() {
   else
     uv pip install --python "${env}/bin/python" warp-lang==1.12.0
   fi
-  uv pip install --python "${env}/bin/python" setuptools==69.5.1
+  uv pip install --python "${env}/bin/python" \
+    setuptools==69.5.1 wheel==0.47.0
 
   test -f "${ROBOTWIN_ROOT}/envs/curobo/setup.py"
   if ! "${env}/bin/python" -c "import curobo" >/dev/null 2>&1; then
@@ -185,7 +215,8 @@ install_openpi() {
   done
 
   local find_links_args=()
-  if [[ "${LIGHTEWM_OPENPI_PREFETCH_WHEELS:-1}" == "1" ]]; then
+  local prefetch_wheels="${LIGHTEWM_OPENPI_PREFETCH_WHEELS:-1}"
+  if [[ "${prefetch_wheels}" == "1" ]]; then
     mkdir -p "${wheelhouse}" "${RUNTIME_ROOT}/logs"
     uv export \
       --project "${OPENPI_ROOT}" \
@@ -223,16 +254,38 @@ install_openpi() {
     find_links_args=(--find-links "${wheelhouse}")
   fi
 
-  env \
-    "GIT_CONFIG_COUNT=${git_config_count}" \
-    "${git_config_env[@]}" \
-    UV_PROJECT_ENVIRONMENT="${ENV_ROOT}/openpi-server" \
-    uv sync \
-      --project "${OPENPI_ROOT}" \
-      --python 3.11 \
-      --frozen \
-      --no-dev \
-      "${find_links_args[@]}"
+  if [[ "${prefetch_wheels}" == "1" ]]; then
+    if [[ "${#find_links_args[@]}" == 0 ]]; then
+      echo "OpenPI wheel prefetch produced no wheels in ${wheelhouse}" >&2
+      exit 1
+    fi
+    uv venv --python 3.11 --allow-existing "${ENV_ROOT}/openpi-server"
+    (
+      cd "${OPENPI_ROOT}"
+      env \
+        "GIT_CONFIG_COUNT=${git_config_count}" \
+        "${git_config_env[@]}" \
+        uv pip sync \
+          --python "${ENV_ROOT}/openpi-server/bin/python" \
+          "${wheelhouse}/resolved.txt" \
+          "${find_links_args[@]}"
+    )
+  else
+    env \
+      "GIT_CONFIG_COUNT=${git_config_count}" \
+      "${git_config_env[@]}" \
+      UV_PROJECT_ENVIRONMENT="${ENV_ROOT}/openpi-server" \
+      uv sync \
+        --project "${OPENPI_ROOT}" \
+        --python 3.11 \
+        --frozen \
+        --no-dev
+  fi
+  # Upstream imports pytest from openpi.models_pytorch.gemma_pytorch at
+  # policy-server runtime, but declares it only in the dev dependency group.
+  uv pip install \
+    --python "${ENV_ROOT}/openpi-server/bin/python" \
+    "pytest==8.3.5"
   uv pip install \
     --python "${ENV_ROOT}/robolab-sim/bin/python" \
     -e "${OPENPI_ROOT}/packages/openpi-client"

@@ -227,6 +227,11 @@ For OpenPI start with `XLA_PYTHON_CLIENT_MEM_FRACTION=0.5`.
 `scripts/setup_closed_loop_benchmark_envs.sh` reproduces the four isolated
 environments from the pinned official repositories. Run a single component
 (`robotwin`, `starwam`, `robolab`, or `openpi`) or `all`.
+Fresh PAI L20 images are not assumed to contain the complete toolchain. The
+runtime setup installs pinned `uv`, Git LFS, and the NVIDIA CUDA apt source;
+replaces the PAI PPU CUDA symlink with stock CUDA 12.4; and removes PPU library
+paths before building PyTorch3D and CuRobo. CuRobo's legacy build also requires
+`setuptools` and `wheel` to be installed before editable metadata generation.
 For RoboLab it materializes and verifies the SHA-256 checksums in
 `env/robolab_correctness_sample_assets.sha256`; leaving these Git LFS objects
 as pointer files makes task import fail, and the upstream resolver can
@@ -234,6 +239,19 @@ misreport that underlying asset error as a missing task class.
 On hosts where GitHub is unavailable, OpenPI's pinned LeRobot and dlimp commits
 may be mirrored at `${LIGHTEWM_EVAL_ROOT}/git-mirrors/{lerobot,dlimp}`; the
 setup script automatically rewrites only those two Git URLs.
+
+OpenPI's large lockfile wheels are downloaded and checksum-verified into a
+local wheelhouse. A frozen `uv sync` still follows the registry URLs embedded
+in `uv.lock`, so it does not reliably consume those prefetched files. The
+installer instead synchronizes the exact frozen `uv export` result with
+`uv pip sync` and the local wheelhouse. It then installs the lock's pytest
+version explicitly because upstream `gemma_pytorch.py` imports pytest at
+policy-server runtime while declaring it only as a development dependency.
+
+The clean-room bootstrap was repeated on `lightewm_eval_l20_b` and accepted
+only after the NVIDIA L20/CUDA/Vulkan checks, official RoboTwin render,
+RoboLab `BananaInBowlTask` deterministic hold, StarWAM/OpenPI server entrypoint
+checks, and the 5+12 correctness-sample manifest validation all passed.
 
 The DSW must expose `/dev/nvidia-modeset` and allow character device
 `195:254`. `scripts/setup_aliyun_l20_runtime.sh` starts the NVIDIA Xorg screen,

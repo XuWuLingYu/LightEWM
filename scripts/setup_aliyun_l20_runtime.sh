@@ -6,14 +6,36 @@ CACHE_DIR="${ROOT}/cache"
 LOG_DIR="${ROOT}/logs"
 mkdir -p "${CACHE_DIR}" "${LOG_DIR}"
 
+ensure_cuda_apt_repo() {
+  local repo_list="/etc/apt/sources.list.d/cuda-ubuntu2204-x86_64.list"
+  if [[ ! -s "${repo_list}" ]]; then
+    curl -fsSL \
+      https://developer.download.nvidia.com/compute/cuda/repos/ubuntu2204/x86_64/cuda-keyring_1.1-1_all.deb \
+      -o /tmp/cuda-keyring.deb
+    dpkg -i /tmp/cuda-keyring.deb
+  fi
+  apt-get update -qq
+}
+
 apt-get update -qq
 DEBIAN_FRONTEND=noninteractive apt-get install -y -qq \
-  aria2 ca-certificates curl libglu1-mesa python3-packaging python3-tomli vulkan-tools \
+  aria2 ca-certificates curl git git-lfs libglu1-mesa python3-packaging python3-pip python3-tomli vulkan-tools \
   xserver-xorg-core
+git lfs install --system --skip-repo
+
+uv_version="${LIGHTEWM_UV_VERSION:-0.11.32}"
+if ! command -v uv >/dev/null 2>&1 \
+  || [[ "$(uv --version 2>/dev/null)" != "uv ${uv_version} "* ]]; then
+  python3 -m pip install \
+    --no-cache-dir \
+    --index-url "${LIGHTEWM_PYPI_INDEX:-https://mirrors.aliyun.com/pypi/simple}" \
+    "uv==${uv_version}"
+fi
 
 need_cuda_packages=false
 if [[ ! -x /usr/local/cuda/bin/nvcc ]] \
-  || strings /usr/local/cuda/bin/nvcc | grep -q 'PPU_OPTION'; then
+  || strings /usr/local/cuda/bin/nvcc | grep -q 'PPU_OPTION' \
+  || [[ "$(readlink -f /usr/local/cuda)" == /usr/local/PPU_SDK/* ]]; then
   if [[ -L /usr/local/cuda-12.4 ]] \
     && [[ "$(readlink -f /usr/local/cuda-12.4)" == /usr/local/PPU_SDK/CUDA_SDK ]]; then
     mv /usr/local/cuda-12.4 /usr/local/cuda-12.4-hggc
@@ -26,11 +48,7 @@ for header in cublas_v2.h cusolverDn.h cusparse.h; do
   fi
 done
 if [[ "${need_cuda_packages}" == true ]]; then
-  curl -fsSL \
-    https://developer.download.nvidia.com/compute/cuda/repos/ubuntu2204/x86_64/cuda-keyring_1.1-1_all.deb \
-    -o /tmp/cuda-keyring.deb
-  dpkg -i /tmp/cuda-keyring.deb
-  apt-get update -qq
+  ensure_cuda_apt_repo
   DEBIAN_FRONTEND=noninteractive apt-get install -y -qq \
     cuda-nvcc-12-4 \
     libcublas-dev-12-4 \
@@ -118,6 +136,7 @@ fi
 # process can hide the host Vulkan driver and make GPU Foundation report
 # "Driver Version: 0", even when CUDA compute works without them.
 if (( driver_major < 570 )); then
+  ensure_cuda_apt_repo
   DEBIAN_FRONTEND=noninteractive apt-get install -y -qq cuda-compat-12-8
   cuda_compat_dir="/usr/local/cuda-12.8/compat"
   if [[ ! -f "${cuda_compat_dir}/libcuda.so.1" ]]; then
