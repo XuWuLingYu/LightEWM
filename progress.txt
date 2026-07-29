@@ -1,0 +1,43 @@
+2026-07-27
+- Created clean branch feat/closed-loop-benchmark-contracts from upstream main 6f4f5c5.
+- Allocated Aliyun DSW lightewm_eval_l20 (1 x L20 48 GB, 16 CPU, 128 GB).
+- Mounted persistent dataset at /mnt/data and configured a 48-hour shutdown timer.
+- Wrote closed-loop architecture and acceptance contract.
+- Implemented PolicySpec, BenchmarkSpec, EpisodeRecord, ArtifactIndex, official
+  command harness, native parsers, result normalizer, and contract tests.
+- Added real per-episode LIBERO CSV parsing and deterministic RoboTwin/RoboLab
+  control probes with qpos/object-state evidence.
+- Pinned official revisions: RoboTwin 13c3c47, RoboLab 0aef241, StarWAM a7b05c8.
+- Verified the L20 exposes Vulkan RT extensions after installing exact
+  550.163.01 graphics userspace and starting a headless NVIDIA Xorg screen.
+- Replaced the Ubuntu 20.04 DSW image with Ubuntu 22.04/glibc 2.35 because the
+  official Isaac Lab 2.2.0 wheel requires manylinux_2_35.
+- Persisted real LIBERO regression evidence on the DSW: OpenVLA 79/80 and
+  FastWAM 39/40, with native inputs, EpisodeRecord JSONL, summaries, spec
+  hashes, and artifact indexes.
+- Set NVIDIA_DRIVER_CAPABILITIES=all on the DSW and verified the container can
+  access nvidia-modeset. Vulkan reports NVIDIA L20, driver 550.163.01,
+  VK_KHR_ray_tracing_pipeline, and VK_KHR_acceleration_structure.
+- Rebuilt RoboTwin's PyTorch3D/CuRobo CUDA extensions with the stock CUDA 12.4
+  compiler for `sm_89`.
+- Passed the RoboTwin official render and scripted-expert ground-truth gates.
+  The `adjust_bottle` expert trajectory returned official success and produced
+  HDF5 plus MP4 artifacts.
+- Passed hold, zero, wrong-gripper, and reverse deterministic negative controls
+  at the same effective seed. All four returned official success false; hold
+  preserved qpos while active controls changed qpos.
+- Re-downloaded the StarWAM RoboTwin MoT checkpoint through the official
+  ModelScope CLI after rejecting a same-path invalid file with `torch.load`.
+  The verified checkpoint has 3300 state-dict keys, size 12042083065, and
+  SHA-256 7d5db55758fcd9e4469ec8416d8ca0f046e52a79077e270fece017ed4187faa8.
+- Passed the StarWAM reference-policy gate on `adjust_bottle`: `demo_clean`
+  5/5 and `demo_randomized` 5/5, with ten official episode videos and
+  normalized episode records.
+- Passed RoboLab's recorded-replay ground-truth gate: 648 steps, official
+  success true, and maximum state drift 0.0000 against the 0.01 threshold.
+- Passed RoboLab's gripper action-path gate with 101 samples, command range
+  0.785398163, and observed state range 1.0.
+- Passed RoboLab's deterministic hold negative gate: official success false,
+  qpos maximum delta 0.0, and object-state maximum delta 0.0048403683.
+- Next: finish the isolated OpenPI environment and pi0.5 reference-policy gate,
+  then run the independent acceptance review.

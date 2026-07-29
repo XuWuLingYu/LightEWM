@@ -1,0 +1,13 @@
+diff --git a/script/eval_policy.py b/script/eval_policy.py
+index eded198..20d45c2 100644
+--- a/script/eval_policy.py
++++ b/script/eval_policy.py
+@@ -159,7 +159,7 @@ def main(usr_args):
+
+     st_seed = 100000 * (1 + seed)
+     suc_nums = []
+-    test_num = 100
++    test_num = int(usr_args.get("test_num", 100))
+     topk = 1
+
+     model = get_model(usr_args)

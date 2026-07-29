@@ -1,0 +1,32 @@
+name: openvla-oft-libero-10
+family: openvla-oft
+checkpoint:
+  format: huggingface_pretrained
+  uri: moojink/openvla-7b-oft-finetuned-libero-10
+  config_uri: experiments/robot/libero/run_libero_eval.py
+runtime:
+  mode: local
+  environment: openvla-oft
+observations:
+  full_image:
+    shape: [224, 224, 3]
+    dtype: uint8
+    semantics: agentview_rgb_center_crop
+  wrist_image:
+    shape: [224, 224, 3]
+    dtype: uint8
+    semantics: eye_in_hand_rgb_center_crop
+  state:
+    shape: [8]
+    dtype: float32
+    semantics: eef_position_axis_angle_gripper_qpos
+action:
+  shape: [8, 7]
+  dtype: float32
+  semantics: normalized_delta_eef_axis_angle_gripper_chunk
+action_chunk_size: 8
+execution_horizon: 8
+metadata:
+  env_image_resolution: 256
+  center_crop: true
+  gripper_postprocess: normalize_binarize_then_invert

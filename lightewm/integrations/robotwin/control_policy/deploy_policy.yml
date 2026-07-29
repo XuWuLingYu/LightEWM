@@ -1,0 +1,9 @@
+policy_name: lightewm_control
+task_name: null
+task_config: null
+ckpt_setting: deterministic-negative
+seed: 0
+instruction_type: unseen
+test_num: 1
+control_mode: hold
+control_probe_path: control_probe.json

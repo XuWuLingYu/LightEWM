@@ -1,0 +1,33 @@
+diff --git a/examples/run_empty.py b/examples/run_empty.py
+--- a/examples/run_empty.py
++++ b/examples/run_empty.py
+@@ -74,6 +74,6 @@ import robolab.constants # noqa
+
+ # Run automatic factory generation before main
+-auto_register_droid_envs()
++auto_register_droid_envs(task=args_cli.task)
+
+ robolab.constants.VERBOSE = True
+ robolab.constants.DEBUG = False
+diff --git a/examples/run_gripper_toggle.py b/examples/run_gripper_toggle.py
+--- a/examples/run_gripper_toggle.py
++++ b/examples/run_gripper_toggle.py
+@@ -58,6 +58,6 @@ from robolab.registrations.droid.auto_env_registrations_jointpos import auto_re
+ from robolab.core.environments.factory import get_envs  # noqa: E402
+
+-auto_register_droid_envs()
++auto_register_droid_envs(task=args_cli.task)
+
+
+ def main():
+diff --git a/examples/run_recorded.py b/examples/run_recorded.py
+--- a/examples/run_recorded.py
++++ b/examples/run_recorded.py
+@@ -85,6 +85,6 @@ import robolab.constants # noqa
+
+ # Run automatic factory generation before main
+-auto_register_droid_envs()
++auto_register_droid_envs(task=args_cli.task)
+
+ robolab.constants.ENABLE_SUBTASK_PROGRESS_CHECKING = args_cli.enable_subtask
+ robolab.constants.VERBOSE = True

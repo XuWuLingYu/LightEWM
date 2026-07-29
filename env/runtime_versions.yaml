@@ -1,0 +1,35 @@
+schema_version: 1
+cloud:
+  provider: aliyun
+  service: PAI-DSW
+  region: cn-wulanchabu
+  instance_name: lightewm_eval_l20
+  instance_type: ecs.gn8is.4xlarge
+  base_image: 2.0.0-torch2.4.0-ubuntu22.04-cuda12.4-py310-fixep
+  os: Ubuntu 22.04
+  glibc: "2.35"
+  nvidia_driver: "550.163.01"
+  gpu: NVIDIA L20 48GB
+  cpu: 16
+  memory_gb: 128
+runtimes:
+  robotwin:
+    python: "3.10"
+    repository_revision: 13c3c47ff4312dd62484bcd51be034af55c062d1
+    pytorch3d_revision: 75ebeeaea0908c5527e7b1e305fbc7681382db47
+    curobo_revision: d64c4b005459db10c5dd867d8b30a87d5bda9bdb
+  robolab:
+    python: "3.11"
+    extra: isaac50
+    isaac_sim: "5.0"
+    isaac_lab: "2.2.0"
+    repository_revision: 0aef241fb088ca21bb4ebd24448940ed56620d17
+  starwam:
+    python: "3.11"
+    torch: "2.6.0+cu124"
+    repository_revision: a7b05c8da8f8c88bf4888aa737b938af3b67ab48
+  openpi:
+    python: "3.11"
+    repository_revision: aa6420561529593114160d05e5ad155792b272f3
+    lerobot_revision: 0cf864870cf29f4738d3ade893e6fd13fbd7cdb5
+    dlimp_revision: ad72ce3a9b414db2185bc0b38461d4101a65477a

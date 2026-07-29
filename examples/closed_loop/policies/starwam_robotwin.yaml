@@ -1,0 +1,34 @@
+name: starwam-robotwin-mot-wan22-5b
+family: starwam
+checkpoint:
+  format: state_dict
+  uri: /mnt/data/zhangyu/robot-eval/models/starwam/starwam-robotwin/mot/starwam_wan225b_robotwin_mot.pt
+  sha256: 7d5db55758fcd9e4469ec8416d8ca0f046e52a79077e270fece017ed4187faa8
+  size_bytes: 12042083065
+  backbone_uri: /mnt/data/zhangyu/robot-eval/models/Wan2.2-TI2V-5B
+  config_uri: examples/robotwin/configs/recipes/starwam_robotwin_mot_wan22_5b.yaml
+  stats_uri: /mnt/data/zhangyu/robot-eval/models/starwam/starwam-robotwin/action_stats.json
+runtime:
+  mode: server
+  endpoint: tcp://127.0.0.1:8765
+  environment: lightewm-policy
+observations:
+  cam_high:
+    shape: [256, 320, 3]
+    dtype: uint8
+  cam_left_wrist:
+    shape: [128, 160, 3]
+    dtype: uint8
+  cam_right_wrist:
+    shape: [128, 160, 3]
+    dtype: uint8
+  proprio:
+    shape: [14]
+    dtype: float32
+    semantics: dual_arm_qpos
+action:
+  shape: [32, 14]
+  dtype: float32
+  semantics: dual_arm_joint_position_chunk
+action_chunk_size: 32
+execution_horizon: 24

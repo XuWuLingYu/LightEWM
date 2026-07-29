@@ -1,0 +1,15 @@
+name: robolab
+revision: 0aef241fb088ca21bb4ebd24448940ed56620d17
+protocol: reference-smoke-v1
+official_root: /mnt/data/zhangyu/robot-eval/repos/RoboLab
+tasks: [BananaInBowlTask]
+settings: [default]
+seeds: [0]
+episodes_per_case: 5
+max_steps: 1000
+metadata:
+  isaac_sim: "5.0"
+  isaac_lab: "2.2.0"
+  policy_config: pi05_droid_jointpos
+  policy_server: openpi websocket
+  official_reference_task: true

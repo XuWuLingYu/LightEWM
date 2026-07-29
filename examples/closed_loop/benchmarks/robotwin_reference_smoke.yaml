@@ -1,0 +1,14 @@
+name: robotwin
+revision: 13c3c47ff4312dd62484bcd51be034af55c062d1
+protocol: reference-smoke-v1
+official_root: /mnt/data/zhangyu/robot-eval/repos/RoboTwin
+tasks: [adjust_bottle]
+settings: [demo_clean, demo_randomized]
+seeds: [0]
+episodes_per_case: 5
+max_steps: 500
+metadata:
+  effective_seed_start: 100000
+  instruction_type: unseen
+  inference_steps: 4
+  replan_steps: 24

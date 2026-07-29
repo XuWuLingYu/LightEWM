@@ -20,3 +20,4 @@ wandb
 server_scripts/
 examples/Pretrain/
 .deepspeed_env
+test_results.txt

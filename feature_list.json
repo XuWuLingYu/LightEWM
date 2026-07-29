@@ -1,0 +1,29 @@
+{
+  "features": [
+    {
+      "id": "closed-loop-contracts",
+      "description": "PolicySpec, BenchmarkSpec, EpisodeRecord, Summary, and ArtifactIndex",
+      "status": "completed"
+    },
+    {
+      "id": "libero-normalizer",
+      "description": "Normalize official LIBERO rollout results without changing evaluator semantics",
+      "status": "completed"
+    },
+    {
+      "id": "robotwin-integration",
+      "description": "RoboTwin ground truth, deterministic controls, StarWAM reference policy, and parser",
+      "status": "completed"
+    },
+    {
+      "id": "robolab-integration",
+      "description": "RoboLab replay, action path, deterministic hold, pi0.5 reference policy, and parser",
+      "status": "pending"
+    },
+    {
+      "id": "independent-review",
+      "description": "Independent Codex acceptance review with no P0/P1 findings",
+      "status": "pending"
+    }
+  ]
+}

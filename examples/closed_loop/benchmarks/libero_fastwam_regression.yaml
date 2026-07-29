@@ -1,0 +1,16 @@
+name: libero
+revision: 6f4f5c5
+protocol: fastwam-40case-regression-v1
+official_root: /mnt/data/zhangyu/robot-eval/repos/LightEWM
+tasks: [libero_spatial, libero_object, libero_goal, libero_10]
+settings: [official]
+seeds: [42]
+episodes_per_case: 10
+max_steps: 700
+metadata:
+  task_count_per_suite: 10
+  trials_per_task: 1
+  total_episodes: 40
+  expected_successes: 39
+  inference_steps: 10
+  replan_steps: 10

@@ -1,0 +1,35 @@
+name: fastwam-libero-step-043400
+family: fastwam
+checkpoint:
+  format: state_dict
+  uri: s3://verdent.tech/zhangyu/test_robot_trial/fastwam_training_runs/formal_4gpu_10epoch_20260630/checkpoints/weights/step_043400.pt
+  backbone_uri: Wan-AI/Wan2.2-TI2V-5B
+  config_uri: configs/task/libero_joint_2cam224_1e-4.yaml
+  stats_uri: s3://verdent.tech/zhangyu/test_robot_trial/fastwam_training_runs/formal_4gpu_10epoch_20260630/dataset_stats.json
+runtime:
+  mode: local
+  environment: lightewm-policy
+observations:
+  image:
+    shape: [3, 224, 224]
+    dtype: float32
+    semantics: agentview_rgb
+  wrist_image:
+    shape: [3, 224, 224]
+    dtype: float32
+    semantics: eye_in_hand_rgb
+  state:
+    shape: [8]
+    dtype: float32
+    semantics: eef_position_axis_angle_gripper_qpos
+action:
+  shape: [32, 7]
+  dtype: float32
+  semantics: normalized_delta_eef_axis_angle_gripper_chunk
+action_chunk_size: 32
+execution_horizon: 10
+metadata:
+  inference_steps: 10
+  action_video_frequency_ratio: 4
+  video_frames: 9
+  gripper_postprocess: denormalize_binarize_then_invert

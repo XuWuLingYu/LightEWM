@@ -1,0 +1,22 @@
+name: robolab-recorded-expert
+family: recorded-expert
+checkpoint:
+  format: recorded_hdf5
+  uri: examples/recorded_data
+  config_uri: examples/run_recorded.py
+runtime:
+  mode: local
+  environment: robolab-sim
+observations:
+  recorded_state:
+    shape: [STATE_DIM]
+    dtype: float32
+    semantics: official_recorded_simulator_state
+action:
+  shape: [1, 8]
+  dtype: float32
+  semantics: droid_joint_position
+action_chunk_size: 1
+execution_horizon: 1
+metadata:
+  authority: RoboLab official recorded trajectory and environment config

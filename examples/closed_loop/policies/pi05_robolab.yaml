@@ -1,0 +1,36 @@
+name: pi05-droid-jointpos
+family: openpi
+checkpoint:
+  format: openpi_checkpoint
+  uri: gs://openpi-assets-simeval/pi05_droid_jointpos
+  size_bytes: 12435136033
+  config_uri: pi05_droid_jointpos
+  stats_uri: gs://openpi-assets-simeval/pi05_droid_jointpos/assets/droid/norm_stats.json
+runtime:
+  mode: server
+  endpoint: ws://127.0.0.1:8000
+  environment: openpi-server
+observations:
+  over_shoulder_left_camera:
+    shape: [H, W, 3]
+    dtype: uint8
+  wrist_cam:
+    shape: [H, W, 3]
+    dtype: uint8
+  arm_joint_pos:
+    shape: [7]
+    dtype: float32
+  gripper_pos:
+    shape: [1]
+    dtype: float32
+action:
+  shape: [HORIZON, 8]
+  dtype: float32
+  semantics: droid_joint_position_chunk
+action_chunk_size: 15
+execution_horizon: 15
+metadata:
+  resolved_checkpoint_path: /mnt/data/zhangyu/robot-eval/models/pi05_droid_jointpos
+  source_manifest_sha256: 1c968f07f8ff9db4626aaa382bc0b53d3371f84691bd2efb8c4d5c3999c0e615
+  source_object_count: 26
+  openpi_revision: aa6420561529593114160d05e5ad155792b272f3

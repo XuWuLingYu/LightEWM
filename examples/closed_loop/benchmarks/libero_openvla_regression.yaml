@@ -1,0 +1,15 @@
+name: libero
+revision: e4287e94541f459edc4feabc4e181f537cd569a8
+protocol: openvla-oft-hdf5-init-regression-v1
+official_root: /root/robot/openvla-oft
+tasks: [KITCHEN_SCENE3_turn_on_the_stove_and_put_the_moka_pot_on_it]
+settings: [libero_10]
+seeds: [7]
+episodes_per_case: 80
+max_steps: 700
+metadata:
+  task_id: 2
+  unique_hdf5_demos: 50
+  initialization: hdf5_demo_state_0_cycled
+  num_steps_wait: 10
+  expected_successes: 79

@@ -1,0 +1,182 @@
+diff --git a/examples/episodes.py b/examples/episodes.py
+index 4f05792..cf6b69f 100644
+--- a/examples/episodes.py
++++ b/examples/episodes.py
+@@ -12,6 +12,7 @@ This module contains utility functions for running different types of episodes:
+ Note: For policy-controlled episodes, see policy/episode.py
+ """
+
++import json
+ import os
+ import re
+
+@@ -69,6 +70,10 @@ def run_gripper_toggle_episode(env, env_cfg=None, *, save_videos=True, video_mod
+
+     toggle_gripper = False
+     subtask_status = []
++    commanded_gripper = []
++    observed_gripper = (
++        obs["proprio_obs"]["gripper_pos"][:, 0].detach().cpu().tolist()
++    )
+     try:
+         for count in tqdm(range(num_steps)):
+             if count % toggle_every == 0:
+@@ -79,8 +84,12 @@ def run_gripper_toggle_episode(env, env_cfg=None, *, save_videos=True, video_mod
+             gripper_width = 0.0 if toggle_gripper else 0.785398163
+             gripper_action = torch.tensor([gripper_width], device=env.device)
+             actions = torch.cat([current_joint_pos, gripper_action]).unsqueeze(0)
++            commanded_gripper.append(float(gripper_width))
+
+             obs, _, term, trunc, info = env.step(actions)
++            observed_gripper.extend(
++                obs["proprio_obs"]["gripper_pos"][:, 0].detach().cpu().tolist()
++            )
+
+             if save_videos:
+                 for env_id in range(env.num_envs):
+@@ -105,6 +114,20 @@ def run_gripper_toggle_episode(env, env_cfg=None, *, save_videos=True, video_mod
+             except Exception:
+                 pass
+
++    probe_path = os.path.join(get_output_dir(), "gripper_toggle_probe.json")
++    with open(probe_path, "w", encoding="utf-8") as probe_file:
++        json.dump(
++            {
++                "schema_version": 1,
++                "action_mode": "gripper_toggle",
++                "commanded_gripper": commanded_gripper,
++                "observed_gripper": observed_gripper,
++            },
++            probe_file,
++            indent=2,
++            sort_keys=True,
++        )
++
+     return True, subtask_status
+
+
+@@ -225,11 +248,10 @@ def run_prerecorded_episode_hdf5(env, hdf5_path: str, episode=0, save_videos=Tru
+     return env.get_env_results(), subtask_status
+
+
+-def run_empty_episode(env, env_cfg, num_envs, num_steps=50, episode=0, save_videos=False, save_image=False):
++def run_empty_episode(env, env_cfg, num_envs, num_steps=50, episode=0, save_videos=False,
++                      save_image=False, action_mode="random"):
+     obs, _ = env.reset()
+-    success = False
+     subtask_status = []
+-    init_state_poses = {}
+     video_fps = 1 / (env_cfg.sim.render_interval * env_cfg.sim.dt) # Hz
+
+     if save_videos:
+@@ -237,10 +237,32 @@ def run_empty_episode(env, env_cfg, num_envs, num_steps=50, episode=0, save_vide
+         video_writer = VideoWriter(video_path, fps=video_fps)
+
+     last_frame = None
+-    init_state_data = None
++    initial_qpos = torch.cat(
++        [obs["proprio_obs"]["arm_joint_pos"], obs["proprio_obs"]["gripper_pos"]],
++        dim=-1,
++    ).detach().cpu().tolist()
++    initial_object_poses = {
++        name: torch.cat(
++            [rigid.data.root_pos_w, rigid.data.root_quat_w], dim=-1
++        ).detach().cpu().tolist()
++        for name, rigid in env.scene.rigid_objects.items()
++    }
++    hold_action = None
++    if action_mode == "hold":
++        proprio = obs["proprio_obs"]
++        hold_action = torch.cat(
++            [proprio["arm_joint_pos"], proprio["gripper_pos"]], dim=-1
++        ).clone()
++        if hold_action.shape[-1] != env.single_action_space.shape[-1]:
++            raise ValueError(
++                f"Hold action has dim {hold_action.shape[-1]}, expected "
++                f"{env.single_action_space.shape[-1]}"
++            )
+     for i in tqdm(range(num_steps)):
+
+-        actions = sample_space(env.single_action_space, device=env.device, batch_size=num_envs)
++        actions = hold_action if action_mode == "hold" else sample_space(
++            env.single_action_space, device=env.device, batch_size=num_envs
++        )
+
+         obs, _, term, trunc, info = env.step(actions)
+         frame = unpack_image_obs(obs, obs_group_name="image_obs", camera_suffix="_camera").get("over_shoulder_left_camera")
+@@ -249,12 +271,49 @@ def run_empty_episode(env, env_cfg, num_envs, num_steps=50, episode=0, save_vide
+         if save_image:
+             last_frame = frame
+
+-        init_state_data = extract_initial_state_info(info)
+         status = extract_subtask_info(info)
+         subtask_status.append(status)
+
+-    for object, values in init_state_data.items():
+-        init_state_poses[object] = values["root_pose"].squeeze(0).cpu().numpy()
++        if env.all_terminated:
++            break
++
++    official_results = env.get_env_results()
++    success = any(result.get("success") is True for result in official_results)
++    final_qpos = torch.cat(
++        [obs["proprio_obs"]["arm_joint_pos"], obs["proprio_obs"]["gripper_pos"]],
++        dim=-1,
++    ).detach().cpu().tolist()
++    final_object_poses = {
++        name: torch.cat(
++            [rigid.data.root_pos_w, rigid.data.root_quat_w], dim=-1
++        ).detach().cpu().tolist()
++        for name, rigid in env.scene.rigid_objects.items()
++    }
++    probe_path = os.path.join(get_output_dir(), f"control_probe_{episode}.json")
++    with open(probe_path, "w", encoding="utf-8") as probe_file:
++        json.dump(
++            {
++                "schema_version": 1,
++                "action_mode": action_mode,
++                "success": success,
++                "official_results": official_results,
++                "initial": {
++                    "qpos": initial_qpos[0],
++                    "objects": {
++                        name: poses[0] for name, poses in initial_object_poses.items()
++                    },
++                },
++                "final": {
++                    "qpos": final_qpos[0],
++                    "objects": {
++                        name: poses[0] for name, poses in final_object_poses.items()
++                    },
++                },
++            },
++            probe_file,
++            indent=2,
++            sort_keys=True,
++        )
+
+     if save_image and last_frame is not None:
+         image_path = os.path.join(get_output_dir(), f"empty_{episode}.png")
+diff --git a/examples/run_empty.py b/examples/run_empty.py
+index 35d6e5c..6fc81ca 100644
+--- a/examples/run_empty.py
++++ b/examples/run_empty.py
+@@ -53,6 +53,8 @@ parser.add_argument("--task", nargs='+', default=None,
+ parser.add_argument("--tag", nargs='+', default=None,
+                        help="List of tags of tasks to evaluate on ")
+ parser.add_argument("--num-steps", type=int, default=50, help="Number of steps to run the environment for.")
++parser.add_argument("--action-mode", choices=("random", "hold"), default="random",
++                    help="Action source. hold reuses reset joint/gripper positions deterministically.")
+
+ # parse the arguments
+ args_cli, _= parser.parse_known_args()
+@@ -116,7 +118,8 @@ def main():
+                 num_steps=args_cli.num_steps,
+                 episode=i,
+                 save_image=False,
+-                save_videos=False)
++                save_videos=False,
++                action_mode=args_cli.action_mode)
+
+             # Pull events before end_episode (which may reset the env)
+             per_env_events = get_all_env_events(env) or []

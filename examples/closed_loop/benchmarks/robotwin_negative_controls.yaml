@@ -1,0 +1,15 @@
+name: robotwin
+revision: 13c3c47ff4312dd62484bcd51be034af55c062d1
+protocol: deterministic-negative-v1
+official_root: /mnt/data/zhangyu/robot-eval/repos/RoboTwin
+tasks: [adjust_bottle]
+settings: [hold, zero, wrong_gripper, reverse]
+seeds: [0]
+episodes_per_case: 1
+max_steps: 500
+metadata:
+  task_config: lightewm_demo_clean_gate
+  eval_policy_seed_argument: -1
+  effective_seed: 0
+  success_authority: official check_success
+  state_probe_required: true

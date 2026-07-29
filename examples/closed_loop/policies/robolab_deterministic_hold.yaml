@@ -1,0 +1,20 @@
+name: robolab-deterministic-hold
+family: deterministic-control
+checkpoint:
+  format: no_checkpoint
+  uri: examples/run_empty.py
+  config_uri: scripts/benchmark_overlays/robolab_deterministic_hold.patch
+runtime:
+  mode: local
+  environment: robolab-sim
+observations:
+  joint_position:
+    shape: [8]
+    dtype: float32
+    semantics: droid_joint_position
+action:
+  shape: [1, 8]
+  dtype: float32
+  semantics: hold_current_joint_position
+action_chunk_size: 1
+execution_horizon: 1

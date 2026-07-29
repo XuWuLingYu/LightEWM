@@ -1,0 +1,22 @@
+name: robotwin-deterministic-controls
+family: deterministic-control
+checkpoint:
+  format: no_checkpoint
+  uri: lightewm/integrations/robotwin/control_policy
+  config_uri: lightewm/integrations/robotwin/control_policy/deploy_policy.yml
+runtime:
+  mode: local
+  environment: robotwin-sim
+observations:
+  proprio:
+    shape: [14]
+    dtype: float32
+    semantics: dual_arm_qpos
+action:
+  shape: [1, 14]
+  dtype: float32
+  semantics: deterministic_dual_arm_joint_position
+action_chunk_size: 1
+execution_horizon: 1
+metadata:
+  modes: [hold, zero, wrong_gripper, reverse]
