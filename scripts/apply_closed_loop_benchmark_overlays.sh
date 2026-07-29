@@ -27,9 +27,16 @@ apply_once \
   "${ROBOLAB_ROOT}" \
   "${LIGHTEWM_ROOT}/scripts/benchmark_overlays/robolab_task_scoped_registration.patch"
 
-ln -sfn \
-  "${LIGHTEWM_ROOT}/lightewm/integrations/robotwin/control_policy" \
-  "${ROBOTWIN_ROOT}/policy/lightewm_control"
+CONTROL_POLICY_TARGET="${ROBOTWIN_ROOT}/policy/lightewm_control"
+if [[ -L "${CONTROL_POLICY_TARGET}" ]]; then
+  rm "${CONTROL_POLICY_TARGET}"
+fi
+install -d "${CONTROL_POLICY_TARGET}"
+install -m 0644 \
+  "${LIGHTEWM_ROOT}/lightewm/integrations/robotwin/control_policy/__init__.py" \
+  "${LIGHTEWM_ROOT}/lightewm/integrations/robotwin/control_policy/deploy_policy.py" \
+  "${LIGHTEWM_ROOT}/lightewm/integrations/robotwin/control_policy/deploy_policy.yml" \
+  "${CONTROL_POLICY_TARGET}/"
 ln -sfn \
   "${STARWAM_ROOT}/examples/robotwin" \
   "${ROBOTWIN_ROOT}/policy/starwam_client"
@@ -37,5 +44,8 @@ ln -sfn \
 cp \
   "${LIGHTEWM_ROOT}/examples/closed_loop/overrides/robotwin_demo_clean_gate.yml" \
   "${ROBOTWIN_ROOT}/task_config/lightewm_demo_clean_gate.yml"
+cp \
+  "${LIGHTEWM_ROOT}/examples/closed_loop/overrides/robotwin_correctness_10pct.yml" \
+  "${ROBOTWIN_ROOT}/task_config/lightewm_correctness_10pct.yml"
 
 echo "Closed-loop benchmark overlays are ready."

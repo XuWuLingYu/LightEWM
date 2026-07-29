@@ -21,6 +21,11 @@
       "status": "pending"
     },
     {
+      "id": "closed-loop-correctness-sample",
+      "description": "Run a stratified 10 percent correctness sample across RoboTwin and RoboLab",
+      "status": "completed"
+    },
+    {
       "id": "independent-review",
       "description": "Independent Codex acceptance review with no P0/P1 findings",
       "status": "pending"

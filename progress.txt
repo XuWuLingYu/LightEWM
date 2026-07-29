@@ -41,3 +41,8 @@
   qpos maximum delta 0.0, and object-state maximum delta 0.0048403683.
 - Next: finish the isolated OpenPI environment and pi0.5 reference-policy gate,
   then run the independent acceptance review.
+[2026-07-29 16:34] Started closed-loop-correctness-sample: stratified 5/50 RoboTwin ground-truth cases and 12/120 RoboLab runability cases on the ready L20.
+[2026-07-29 16:34] Blocked second-L20 provisioning: no PAI OpenAPI credential or instance RAM role is available on the RemoteLab host or current DSW; environment bootstrap remains ready once a second instance is allocated.
+[2026-07-29 17:34] Completed closed-loop-correctness-sample in 51m30s: 17/17 passed at the pinned official revisions. RoboTwin produced fresh expert trajectories, HDF5, and videos for 5/50 tasks; RoboLab passed its one positive recorded replay plus deterministic hold/reset/step/termination probes for 11/120 stratified tasks.
+[2026-07-29 17:34] The sample exposed incomplete RoboLab Git LFS materialization: 9 sampled task modules initially failed to import because their scene/object assets were still pointer files, while the resolver masked the underlying exception as a missing task class. Added and verified a 56-file SHA-256 asset manifest to environment setup, then reran every failed case successfully.
+[2026-07-29 17:34] Hardened sample evidence against false positives: a dedicated relative RoboTwin output config prevents old-trajectory reuse and the official absolute-save-path bug; the runner pins repository revisions, hashes the sample manifest, requires fresh expected outputs, checkpoints per case, and supports resumable reruns.

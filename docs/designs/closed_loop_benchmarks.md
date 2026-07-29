@@ -37,6 +37,35 @@ ArtifactIndex
 does not extend that video-shaped class because a simulator episode is not a
 generated-video artifact.
 
+## Standalone Boundary
+
+LIBERO, RoboTwin, and RoboLab remain independently runnable. Their official
+repositories own simulator construction, episode stepping, controller
+semantics, success checks, and native outputs. A standalone run needs the
+official repository revision, its locked runtime, assets, and the selected
+policy checkpoint; it does not import `lightewm`.
+
+The benchmark overlays only make correctness-gate behavior deterministic or
+machine-readable:
+
+- RoboTwin accepts a configurable smoke episode count and receives a copied
+  deterministic control-probe policy.
+- RoboLab registers only the requested task and records deterministic
+  hold/gripper state probes.
+- StarWAM and OpenPI remain separate policy runtimes required only by their
+  corresponding reference-policy gates.
+
+After `scripts/apply_closed_loop_benchmark_overlays.sh` materializes these
+files, RoboTwin and RoboLab have no runtime dependency on the LightEWM checkout.
+The StarWAM RoboTwin adapter remains a link to the separately versioned StarWAM
+repository because it is model implementation code, not LightEWM glue.
+
+LightEWM starts at the integration boundary: it describes policy and benchmark
+contracts, records exact commands and revisions, parses native outputs, writes
+normalized episode records, and validates cross-benchmark acceptance gates.
+Removing that layer does not stop an official evaluation, but it removes the
+common provenance, normalization, and mechanical gate checks.
+
 ## Contracts
 
 ### PolicySpec
@@ -135,6 +164,34 @@ around the benchmark entrypoints, not a replacement harness.
    - Validate observation -> RoboLab client -> server -> action chunk ->
      simulator -> success.
 
+## Stratified 10 Percent Correctness Sample
+
+`examples/closed_loop/samples/correctness_10pct.yaml` is the checked sample
+contract. It pins the official benchmark revisions, enforces exact sample
+counts, and records the rationale and behavioral attributes for each selected
+case. `scripts/run_closed_loop_correctness_sample.py` runs the official
+entrypoints, checkpoints each case, validates expected-output freshness, and
+writes one resumable summary.
+
+The sample contains:
+
+- RoboTwin: 5/50 tasks, each with a fresh official scripted-expert success,
+  trajectory, HDF5, scene metadata, and video.
+- RoboLab: 12/120 tasks, comprising the repository's one bundled positive
+  recorded replay and 11 deterministic hold probes. Every hold case must
+  instantiate, reset, step, observe object state, keep robot qpos stationary,
+  exercise termination evaluation, and remain unsuccessful.
+
+This is stratified integration evidence, not a claim that all RoboLab success
+predicates have a positive oracle. Eleven RoboLab cases still have only a
+negative/runability verdict because the official repository does not bundle
+positive actions for them.
+
+The accepted run completed 17/17 cases in 51 minutes 30 seconds. RoboTwin
+required 0, 0, 1, 0, and 5 failed planning seeds respectively before finding
+one successful expert trajectory for `adjust_bottle`, `handover_block`,
+`open_microwave`, `stack_blocks_three`, and `scan_object`.
+
 ## Environment Lock
 
 ```text
@@ -170,6 +227,10 @@ For OpenPI start with `XLA_PYTHON_CLIENT_MEM_FRACTION=0.5`.
 `scripts/setup_closed_loop_benchmark_envs.sh` reproduces the four isolated
 environments from the pinned official repositories. Run a single component
 (`robotwin`, `starwam`, `robolab`, or `openpi`) or `all`.
+For RoboLab it materializes and verifies the SHA-256 checksums in
+`env/robolab_correctness_sample_assets.sha256`; leaving these Git LFS objects
+as pointer files makes task import fail, and the upstream resolver can
+misreport that underlying asset error as a missing task class.
 On hosts where GitHub is unavailable, OpenPI's pinned LeRobot and dlimp commits
 may be mirrored at `${LIGHTEWM_EVAL_ROOT}/git-mirrors/{lerobot,dlimp}`; the
 setup script automatically rewrites only those two Git URLs.
@@ -202,6 +263,7 @@ contains command, log, native output, normalized output, and acceptance result.
 | RoboTwin StarWAM | `robotwin/reference_starwam` | passed, `demo_clean` 5/5 and `demo_randomized` 5/5 |
 | RoboLab replay/toggle | `robolab/ground_truth` | passed, replay 1/1 and gripper action-path probe passed |
 | RoboLab deterministic hold | `robolab/negative_hold` | passed, 0/1 success and stationary-qpos probe passed |
+| 10% correctness sample | `correctness_sample_10pct_run2` | passed, RoboTwin 5/5 and RoboLab 12/12 |
 | RoboLab pi0.5 | `robolab/reference_pi05` | pending |
 
 The accepted StarWAM checkpoint is

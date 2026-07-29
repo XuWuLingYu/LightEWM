@@ -98,21 +98,13 @@ install_starwam() {
 
 install_robolab() {
   export UV_CACHE_DIR="${CACHE_ROOT}/uv-robolab"
-  git -C "${ROBOLAB_ROOT}" lfs pull --include="$(
-    printf '%s' \
-      'assets/fixtures/Props/instaceable_meshes.usd,' \
-      'assets/objects/ycb/textures/obj_000010.png,' \
-      'assets/objects/ycb/textures/obj_000013.png,' \
-      'assets/objects/hot3d/textures/obj_000030.png'
-  )"
+  local asset_manifest="${LIGHTEWM_ROOT}/env/robolab_correctness_sample_assets.sha256"
+  local asset_include
+  asset_include="$(awk '{print $2}' "${asset_manifest}" | paste -sd,)"
+  git -C "${ROBOLAB_ROOT}" lfs pull --include="${asset_include}"
   (
     cd "${ROBOLAB_ROOT}"
-    printf '%s\n' \
-      "b7827de44e5051d8d7803507b9362dbf8521181996449a88934b59ceb0d54db6  assets/fixtures/Props/instaceable_meshes.usd" \
-      "b68de45c4d92a2f8d3e8da357912b16b972ef37f25b56bcb593d4cf9fdc4ba2d  assets/objects/ycb/textures/obj_000010.png" \
-      "20029d22859dd94150b3d969c0b351663b6d7be31d28b90ba15987ee3ba57fdc  assets/objects/ycb/textures/obj_000013.png" \
-      "d77642c56ff641e359b77acb24d93f1b6dd14e5f6a90d3c3f85b8a45c337f197  assets/objects/hot3d/textures/obj_000030.png" \
-      | sha256sum -c -
+    sha256sum -c "${asset_manifest}"
   )
   UV_PROJECT_ENVIRONMENT="${ENV_ROOT}/robolab-sim" \
     uv sync --project "${ROBOLAB_ROOT}" --python 3.11 --extra isaac50 --frozen

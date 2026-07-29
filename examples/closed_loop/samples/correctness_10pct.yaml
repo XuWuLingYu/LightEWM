@@ -1,0 +1,90 @@
+schema_version: 1
+fraction: 0.10
+benchmarks:
+  robotwin:
+    population: 50
+    repository_revision: 13c3c47ff4312dd62484bcd51be034af55c062d1
+    cases:
+      - task: adjust_bottle
+        gate: ground-truth
+        setting: lightewm_correctness_10pct
+        rationale: simple bimanual pick-and-place baseline
+      - task: handover_block
+        gate: ground-truth
+        setting: lightewm_correctness_10pct
+        rationale: bimanual handover and coordination
+      - task: open_microwave
+        gate: ground-truth
+        setting: lightewm_correctness_10pct
+        rationale: articulated-object interaction and long horizon
+      - task: stack_blocks_three
+        gate: ground-truth
+        setting: lightewm_correctness_10pct
+        rationale: multi-stage precision stacking
+      - task: scan_object
+        gate: ground-truth
+        setting: lightewm_correctness_10pct
+        rationale: tool-like manipulation and pose-sensitive completion
+  robolab:
+    population: 120
+    repository_revision: 0aef241fb088ca21bb4ebd24448940ed56620d17
+    cases:
+      - task: RubiksCubeAndBananaTask
+        gate: recorded-replay
+        rationale: official positive replay oracle and conjunction predicate
+        attributes: [conjunction, simple]
+      - task: BananaInBowlTask
+        gate: deterministic-hold
+        steps: 50
+        rationale: canonical semantic pick-and-place environment
+        attributes: [semantics, simple]
+      - task: BananaThenRubiksCubeTask
+        gate: deterministic-hold
+        steps: 50
+        rationale: ordered sequential conjunction
+        attributes: [conjunction, sequential]
+      - task: BlockStackingSpecifiedOrderTask
+        gate: deterministic-hold
+        steps: 50
+        rationale: complex ordered stacking and color predicates
+        attributes: [stacking, color, complex]
+      - task: ReorientWhiteMugsTask
+        gate: deterministic-hold
+        steps: 50
+        rationale: orientation and color predicates
+        attributes: [reorientation, color, moderate]
+      - task: RubiksCubeBehindBowlTask
+        gate: deterministic-hold
+        steps: 50
+        rationale: relational spatial predicate
+        attributes: [spatial, moderate]
+      - task: SmallerObjectButterInBinTask
+        gate: deterministic-hold
+        steps: 50
+        rationale: relative-size selection
+        attributes: [size, simple]
+      - task: ToolsPickingAllHammersTask
+        gate: deterministic-hold
+        steps: 50
+        rationale: semantic category selection with multiple objects
+        attributes: [semantics, spatial, complex]
+      - task: ToolOrganizationBothTask
+        gate: deterministic-hold
+        steps: 50
+        rationale: semantic sorting with forbidden-object behavior
+        attributes: [semantics, spatial, moderate]
+      - task: TakeSpatulaOffShelfTask
+        gate: deterministic-hold
+        steps: 50
+        rationale: affordance and source-to-target spatial relation
+        attributes: [affordance, spatial, moderate]
+      - task: PutTwoMugsOnShelfTask
+        gate: deterministic-hold
+        steps: 50
+        rationale: counting, affordance, and shelf placement
+        attributes: [counting, affordance, spatial, moderate]
+      - task: RecycleCartonsVerticalCrateTask
+        gate: deterministic-hold
+        steps: 50
+        rationale: semantic selection and container geometry
+        attributes: [semantics, spatial, moderate]
